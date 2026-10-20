@@ -1,0 +1,15 @@
+# dependencies
+/node_modules
+
+# next.js build output
+/.next/
+/out/
+
+# env: semua diabaikan kecuali template .env.example
+.env
+.env.*
+!.env.example
+
+# misc
+*.tsbuildinfo
+next-env.d.ts

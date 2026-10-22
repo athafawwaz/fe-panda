@@ -175,7 +175,7 @@ function AIQuotaPanel({ notify }: { notify: (msg: string) => void }) {
     return (
       <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm text-sm text-slate-600">
         <p className="font-black text-slate-900 mb-1">Built-in Agent aktif</p>
-        Agentic AI tidak memakai LLM eksternal, jadi tidak ada kuota yang perlu dipantau. Atur provider & API key di
+        Asisten tidak memakai LLM eksternal, jadi tidak ada kuota yang perlu dipantau. Atur provider & API key di
         tab <span className="font-bold">API Key</span>.
       </div>
     );
@@ -351,7 +351,7 @@ function AIQuotaPanel({ notify }: { notify: (msg: string) => void }) {
           </p>
           <p>
             Provider tidak menyediakan data sisa kuota, jadi PANDA menghitung sendiri setiap permintaan ke LLM (chat
-            &amp; upload via Agentic AI) untuk model dan API key yang aktif.
+            &amp; upload lewat asisten) untuk model dan API key yang aktif.
           </p>
           <p>
             Bila API key yang sama juga dipakai aplikasi lain, sisa kuota sebenarnya bisa lebih kecil. Saat provider
@@ -449,7 +449,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
         body: JSON.stringify(formPayload()),
       });
       applySettings(res.settings);
-      notify("Setting Agentic AI berhasil disimpan & langsung aktif.");
+      notify("Pengaturan asisten disimpan dan langsung aktif.");
     } catch (err: any) {
       notify(err.message);
     } finally {
@@ -458,7 +458,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
   };
 
   const handleClearKey = async () => {
-    if (!window.confirm("Hapus API key tersimpan? Agentic AI akan kembali memakai Built-in Agent.")) return;
+    if (!window.confirm("Hapus API key tersimpan? Asisten akan kembali memakai mesin bawaan.")) return;
     setSaving(true);
     try {
       const res = await apiFetch<{ settings: AISettings }>("/admin/settings/ai", {
@@ -467,7 +467,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
       });
       applySettings(res.settings);
       setTestResult(null);
-      notify("API key dihapus. Agentic AI memakai Built-in Agent.");
+      notify("API key dihapus. Asisten memakai mesin bawaan.");
     } catch (err: any) {
       notify(err.message);
     } finally {
@@ -503,7 +503,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
     <div className="grid lg:grid-cols-12 gap-6">
       <form onSubmit={handleSave} className="lg:col-span-7 bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm space-y-5">
         <div>
-          <h3 className="font-black text-slate-900 text-base">Konfigurasi LLM Agentic AI</h3>
+          <h3 className="font-black text-slate-900 text-base">Konfigurasi LLM asisten</h3>
           <p className="text-xs text-slate-500">
             Endpoint OpenAI-compatible (<code className="font-mono">/chat/completions</code>). Perubahan langsung
             berlaku tanpa restart backend.
@@ -603,7 +603,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
             />
             <span className="text-xs text-slate-700 leading-relaxed">
               <span className="font-bold text-slate-900 block">
-                Izinkan isi dokumen dikirim ke LLM eksternal (analisis upload &amp; chat Agentic AI)
+                Izinkan isi dokumen dikirim ke LLM eksternal (analisis upload &amp; chat asisten)
               </span>
               Bila mati (default), isi dokumen tetap di server: LLM hanya menerima nama file, pesan user, metadata, dan
               ringkasan dari pengunggah, sehingga jawaban chat tidak memuat rincian isi file.
@@ -643,14 +643,14 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
         </div>
 
         {/* Mode Thinking: otomatis (AI berhenti sendiri) atau batas keputusan agen (tiap keputusan = 1 panggilan LLM) */}
-        <div className="p-4 rounded-2xl border border-violet-200 bg-violet-50/60 space-y-2.5">
-          <p className="text-xs font-bold text-violet-950">Langkah penelusuran mode Thinking</p>
+        <div className="p-4 rounded-2xl border border-blue-200 bg-blue-50/60 space-y-2.5">
+          <p className="text-xs font-bold text-blue-950">Langkah penelusuran mode Thinking</p>
           <label className="flex items-start gap-3 cursor-pointer">
             <input
               type="checkbox"
               checked={thinkingAuto}
               onChange={(e) => setThinkingAuto(e.target.checked)}
-              className="mt-0.5 w-4 h-4 accent-violet-600 flex-shrink-0"
+              className="mt-0.5 w-4 h-4 accent-blue-600 flex-shrink-0"
             />
             <span className="text-xs text-slate-700 leading-relaxed">
               <span className="font-bold text-slate-900 block">Otomatis — AI berhenti sendiri saat bukti cukup (disarankan)</span>
@@ -671,7 +671,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
                 value={thinkingSteps}
                 onChange={(e) => setThinkingSteps(e.target.value)}
                 onBlur={() => setThinkingSteps(String(thinkingStepsValue))}
-                className="w-24 px-3 py-2 rounded-xl border border-violet-200 text-sm font-mono bg-white"
+                className="w-24 px-3 py-2 rounded-xl border border-blue-200 text-sm font-mono bg-white"
               />
               <span className="text-xs text-slate-600">
                 keputusan agen maksimal ({minThinkingSteps}–{maxThinkingSteps}) — hingga {thinkingStepsValue + 1} panggilan LLM
@@ -741,7 +741,7 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
 
       {/* Status Engine Aktif */}
       <div className="lg:col-span-5 space-y-4">
-        <div className="rounded-3xl bg-gradient-to-br from-[#0f172a] via-[#1e3a8a] to-[#0f172a] p-6 text-white shadow-xl">
+        <div className="rounded-3xl bg-blue-900 p-6 text-white shadow-xl">
           <span className="text-[10px] font-bold uppercase tracking-widest text-cyan-300">Engine Aktif Saat Ini</span>
           <p className="text-lg font-black mt-1 leading-snug">{settings.engine_mode}</p>
           <div className="mt-4 space-y-2 text-xs text-blue-100">

@@ -247,7 +247,7 @@ export default function AIUploadCard({
           {result.content_index?.note && <p className="text-emerald-700">ℹ️ {result.content_index.note}</p>}
           {result.content_index?.source === "FILE" && (
             <p className="text-emerald-700">
-              ✓ Isi file dibaca & diindeks untuk pencarian Agentic AI ({result.content_index.chunks} potongan).
+              Isi file dibaca & diindeks untuk pencarian asisten ({result.content_index.chunks} potongan).
             </p>
           )}
         </div>

@@ -9,7 +9,7 @@ import { ROLE_LABELS, isAdminRole, type UserProfile, type UserRole } from "@/lib
 type RoleFilter = "ALL" | UserRole;
 
 const ROLE_PILL: Record<UserRole, string> = {
-  SUPER_ADMIN: "bg-gradient-to-r from-indigo-600 to-blue-600 text-white",
+  SUPER_ADMIN: "bg-blue-900 text-white",
   ADMIN: "bg-blue-600 text-white",
   PEGAWAI_TI: "bg-slate-100 text-slate-700",
 };

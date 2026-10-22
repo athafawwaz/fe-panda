@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Avatar, EmptyState } from "@/components/ListControls";
 import { categoryStyle, formatDateTime, shortName } from "@/lib/uiFormat";
+import DocumentDownloadButton from "@/components/DocumentDownloadButton";
 import type { AppChangeSection, AppFolder, ApplicationItem, DocumentItem } from "@/lib/api";
 
 /** Dokumen inti yang diharapkan ada di setiap section (panduan tampilan, bukan aturan wajib server). */
@@ -41,7 +42,6 @@ interface Props {
   onAddSection: () => void;
   onUpload: (category: string) => void;
   onPreview: (doc: DocumentItem) => void;
-  downloadUrl: (id: string) => string;
 }
 
 export default function ApplicationDetail({
@@ -54,7 +54,6 @@ export default function ApplicationDetail({
   onAddSection,
   onUpload,
   onPreview,
-  downloadUrl,
 }: Props) {
   const sections = app.sections || [];
   const active: AppChangeSection | undefined = sections.find((s) => s.id === activeSectionId) || sections[0];
@@ -76,13 +75,14 @@ export default function ApplicationDetail({
       >
         <Eye size={14} /> Lihat
       </button>
-      <a
-        href={downloadUrl(doc.id)}
+      <DocumentDownloadButton
+        docId={doc.id}
+        filename={doc.standardized_name}
         className="h-8 w-8 rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors"
         title="Unduh dokumen"
       >
         <Download size={14} />
-      </a>
+      </DocumentDownloadButton>
     </div>
   );
 

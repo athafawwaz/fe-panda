@@ -17,13 +17,13 @@ import {
 } from "lucide-react";
 import {
   apiFetch,
-  getDocumentDownloadUrl,
   AIUploadAnalysis,
   AIUploadConfirmResult,
   AIRankedOption,
   MasterTeam,
 } from "@/lib/api";
 import CustomSelect from "@/components/CustomSelect";
+import DocumentDownloadButton from "@/components/DocumentDownloadButton";
 
 // Kartu upload via Agentic AI: AI hanya menyajikan PILIHAN berperingkat + alasannya.
 // Tidak ada pilihan yang terpilih otomatis; tujuan, kategori, dan judul wajib ditentukan user.
@@ -248,12 +248,13 @@ export default function AIUploadCard({
           >
             <Eye size={14} /> Klik Lihat
           </button>
-          <a
-            href={getDocumentDownloadUrl(doc.id)}
+          <DocumentDownloadButton
+            docId={doc.id}
+            filename={doc.standardized_name}
             className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5"
           >
             <Download size={14} /> Download
-          </a>
+          </DocumentDownloadButton>
         </div>
       </div>
     );

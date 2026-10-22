@@ -682,9 +682,9 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
           <p className="text-[11px] text-slate-500 leading-relaxed">
             Setiap putaran agen (memanggil satu atau beberapa tool, atau menyusun jawaban) memakai 1 panggilan LLM, sehingga
             pertanyaan Thinking lebih cepat menghabiskan kuota harian. Mode standar dibatasi 4 putaran / 8 tool call; Thinking
-            hingga 30 tool call. Hasil tool lama diringkas otomatis agar token per putaran tetap hemat. Provider yang tidak
-            mendukung tool calling otomatis memakai agen JSON. Tanpa API key, Thinking memakai rencana kueri otomatis dan
-            memperluas pencarian dari temuan teratas sampai tidak ada temuan baru.
+            hingga 30 tool call. Hasil tool lama diringkas otomatis agar token per putaran tetap hemat. Model menentukan
+            tool dan kapan menjawab. Model yang tidak mendukung tool calling atau gagal merespons menampilkan error;
+            mode builtin hanya dipakai saat provider Built-in dipilih.
           </p>
         </div>
 
@@ -800,8 +800,8 @@ function AISettingsPanel({ notify }: { notify: (msg: string) => void }) {
           </p>
           <p>Key disimpan terenkripsi (AES-GCM) di database dan tidak pernah dikirim utuh ke browser.</p>
           <p>
-            Bila LLM eksternal gagal merespons, Agentic AI otomatis fallback ke Built-in Agent sehingga pencarian
-            dokumen tetap berjalan.
+            Bila model terkonfigurasi gagal merespons, kegagalannya ditampilkan tanpa jawaban pengganti builtin.
+            Pilih provider Built-in secara eksplisit untuk pencarian tanpa model.
           </p>
         </div>
       </div>

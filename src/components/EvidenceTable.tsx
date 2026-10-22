@@ -23,6 +23,7 @@ import {
   shortName,
 } from "@/lib/uiFormat";
 import { Avatar, EmptyState, FilterChip, SearchBox } from "@/components/ListControls";
+import DocumentDownloadButton from "@/components/DocumentDownloadButton";
 
 type Visibility = "ALL" | "ALL_TIM" | "TEAM_ONLY";
 type SortKey = "newest" | "oldest" | "title";
@@ -30,7 +31,6 @@ type SortKey = "newest" | "oldest" | "title";
 interface EvidenceTableProps {
   docs: DocumentItem[];
   onPreview: (doc: DocumentItem) => void;
-  downloadUrl: (id: string) => string;
   onUpload?: () => void;
 }
 
@@ -64,7 +64,7 @@ function usefulSummary(doc: DocumentItem): string {
 }
 
 /** Tabel Evidence lintas tim: pencarian, filter kategori & visibilitas, urutan, dan tampilan kartu di layar sempit. */
-export default function EvidenceTable({ docs, onPreview, downloadUrl, onUpload }: EvidenceTableProps) {
+export default function EvidenceTable({ docs, onPreview, onUpload }: EvidenceTableProps) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("ALL");
   const [visibility, setVisibility] = useState<Visibility>("ALL");
@@ -128,13 +128,14 @@ export default function EvidenceTable({ docs, onPreview, downloadUrl, onUpload }
       >
         <Eye size={14} /> Lihat
       </button>
-      <a
-        href={downloadUrl(doc.id)}
+      <DocumentDownloadButton
+        docId={doc.id}
+        filename={doc.standardized_name}
         className="h-8 w-8 rounded-lg bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center transition-colors"
         title={`Unduh (${formatFileSize(doc.file_size_bytes)})`}
       >
         <Download size={14} />
-      </a>
+      </DocumentDownloadButton>
     </div>
   );
 

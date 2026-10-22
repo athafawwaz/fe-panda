@@ -57,6 +57,8 @@ import EvidenceTable from "@/components/EvidenceTable";
 import AuditLogTimeline from "@/components/AuditLogTimeline";
 import CustomSelect from "@/components/CustomSelect";
 import ApplicationDetail from "@/components/ApplicationDetail";
+import DocumentDownloadButton from "@/components/DocumentDownloadButton";
+import DocumentPreviewFrame from "@/components/DocumentPreviewFrame";
 import { shortName } from "@/lib/uiFormat";
 import MasterUserTable from "@/components/MasterUserTable";
 import { StatPill } from "@/components/ListControls";
@@ -71,8 +73,6 @@ import {
   setImpersonation as storeImpersonation,
   isAdminRole,
   ROLE_LABELS,
-  getDocumentPreviewUrl,
-  getDocumentDownloadUrl,
   ImpersonationTarget,
   UserRole,
   UserProfile,
@@ -266,6 +266,8 @@ export default function DashboardWorkspace() {
   const aiLiveShownRef = useRef(0); // karakter jawaban live yang sudah tampil (animasi mengetik)
   const aiScrolledAtRef = useRef(0);
   const aiAbortRef = useRef<AbortController | null>(null);
+  const aiSessionLoadRef = useRef<AbortController | null>(null); // muat riwayat sesi yang sedang berjalan
+  const aiSessionsReqRef = useRef(0); // hanya daftar sesi terbaru yang dipakai
   const aiInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // Riwayat chat tersimpan di server: sesi yang sedang dibuka & daftar sesi milik user
   const [aiSessionId, setAiSessionId] = useState<string | null>(null);
@@ -348,11 +350,11 @@ export default function DashboardWorkspace() {
   // Super Admin: "Lihat sebagai" segmen Tim/Branch (null = kembali ke tampilan Super Admin)
   const switchSegment = async (target: ImpersonationTarget | null) => {
     storeImpersonation(target);
+    aiSessionsReqRef.current++; // daftar sesi segmen lama tidak boleh masuk ke segmen baru
     setActiveMenu("dashboard");
     setSelectedFolder(null);
     setSelectedApp(null);
-    setAiHistory([]);
-    setAiPendingQuestion(null);
+    startNewAiChat(); // juga membatalkan stream / muat sesi segmen lama
     setMasterUsers([]);
     setEditingUserId(null);
     const effective = await loadIdentity();
@@ -827,8 +829,10 @@ export default function DashboardWorkspace() {
     aiLiveShownRef.current = 0;
     aiScrolledAtRef.current = 0;
     setAiLive(aiLiveRef.current);
+    aiSessionLoadRef.current?.abort(); // muat sesi yang belum selesai tidak boleh menimpa chat yang baru dikirim
     const controller = new AbortController();
     aiAbortRef.current = controller;
+    const isCurrent = () => aiAbortRef.current === controller;
     scrollToChatBottom();
 
     try {
@@ -842,21 +846,23 @@ export default function DashboardWorkspace() {
         },
         {
           onStep: (step) =>
-            updateAiLive((prev) => {
+            isCurrent() && updateAiLive((prev) => {
               const steps = prev.steps.some((s) => s.id === step.id)
                 ? prev.steps.map((s) => (s.id === step.id ? step : s))
                 : [...prev.steps, step];
               return { ...prev, steps };
             }),
-          onUsage: (usage) => updateAiLive((prev) => ({ ...prev, usage })),
-          onDelta: (text) => updateAiLive((prev) => ({ ...prev, answer: prev.answer + text })),
+          onUsage: (usage) => isCurrent() && updateAiLive((prev) => ({ ...prev, usage })),
+          onDelta: (text) => isCurrent() && updateAiLive((prev) => ({ ...prev, answer: prev.answer + text })),
           onReset: () => {
+            if (!isCurrent()) return;
             aiLiveShownRef.current = 0;
             updateAiLive((prev) => ({ ...prev, answer: "" }));
           },
         },
         controller.signal
       );
+      if (!isCurrent()) return; // chat dipindah / diganti: jawaban lama dibuang
       // Append chronologically (top-to-bottom like ChatGPT / Gemini); sisa jawaban lanjut "diketik" dari posisi live
       setAiHistory((prev) => [
         ...prev,
@@ -870,6 +876,7 @@ export default function DashboardWorkspace() {
       loadAllWorkspaceData();
       loadAiQuota();
     } catch (err: any) {
+      if (!isCurrent()) return;
       const live = aiLiveRef.current;
       if (err?.name === "AbortError" && live) {
         // Dihentikan user: tampilkan apa yang sudah dikerjakan (tidak disimpan ke riwayat)
@@ -904,12 +911,15 @@ export default function DashboardWorkspace() {
         notify(err.message);
       }
     } finally {
-      setAiPendingQuestion(null);
-      setAiPendingReplyTo(null);
-      aiLiveRef.current = null;
-      setAiLive(null);
-      aiAbortRef.current = null;
-      setAiLoading(false);
+      // Request lama yang sudah dilepas tidak boleh menimpa state request/chat yang lebih baru
+      if (isCurrent()) {
+        setAiPendingQuestion(null);
+        setAiPendingReplyTo(null);
+        aiLiveRef.current = null;
+        setAiLive(null);
+        aiAbortRef.current = null;
+        setAiLoading(false);
+      }
     }
   };
 
@@ -1040,8 +1050,10 @@ export default function DashboardWorkspace() {
   // ─── Riwayat Chat Agentic AI (tersimpan di server per user) ────────────────
 
   const loadAiSessions = async () => {
+    const req = ++aiSessionsReqRef.current;
     try {
       const res = await apiFetch<{ sessions: AIChatSession[] }>("/ai/chat/sessions");
+      if (req !== aiSessionsReqRef.current) return;
       setAiSessions(res.sessions || []);
     } catch {
       // Riwayat hanya pelengkap; chat tetap bisa dipakai walau daftar gagal dimuat
@@ -1071,19 +1083,36 @@ export default function DashboardWorkspace() {
     }
   };
 
-  const startNewAiChat = () => {
+  // Lepas stream / muat sesi yang masih berjalan: hasilnya tidak boleh menimpa percakapan yang baru dibuka
+  const cancelAiInflight = () => {
     aiAbortRef.current?.abort();
-    setAiHistory([]);
+    aiAbortRef.current = null;
+    aiSessionLoadRef.current?.abort();
+    aiSessionLoadRef.current = null;
+    aiLiveRef.current = null;
+    setAiLive(null);
     setAiPendingQuestion(null);
+    setAiPendingReplyTo(null);
+    setAiLoading(false);
+  };
+
+  const startNewAiChat = () => {
+    cancelAiInflight();
+    setAiHistory([]);
     setAiSessionId(null);
     setAiReplyTo(null);
   };
 
   const openAiSession = async (id: string) => {
+    cancelAiInflight();
+    const controller = new AbortController();
+    aiSessionLoadRef.current = controller;
     try {
       const res = await apiFetch<{ session: AIChatSession; messages: AIChatTurn[] }>(
-        `/ai/chat/sessions/${id}`
+        `/ai/chat/sessions/${id}`,
+        { signal: controller.signal }
       );
+      if (controller.signal.aborted) return; // sesi lain / chat baru dipilih saat memuat
       setAiHistory(res.messages.map((m) => ({ question: m.question, response: m.response, replyTo: m.reply_to })));
       const questionsFromSession = res.messages
         .map((m) => m.question?.trim())
@@ -1104,6 +1133,7 @@ export default function DashboardWorkspace() {
       setShowAiSessions(false);
       scrollToChatBottom();
     } catch (err: any) {
+      if (controller.signal.aborted) return;
       notify(err.message);
       loadAiSessions();
     }
@@ -1119,6 +1149,17 @@ export default function DashboardWorkspace() {
       notify(err.message);
     }
   };
+
+  // Unmount (mis. logout / pindah halaman): putus stream & muat sesi, lepas ref agar callback lama tak berefek
+  useEffect(
+    () => () => {
+      aiAbortRef.current?.abort();
+      aiAbortRef.current = null;
+      aiSessionLoadRef.current?.abort();
+      aiSessionLoadRef.current = null;
+    },
+    []
+  );
 
   // Muat daftar riwayat chat & shortcut AI saat membuka menu Agentic AI
   useEffect(() => {
@@ -2205,13 +2246,14 @@ export default function DashboardWorkspace() {
                           >
                             <Eye size={14} />
                           </button>
-                          <a
-                            href={getDocumentDownloadUrl(doc.id)}
+                          <DocumentDownloadButton
+                            docId={doc.id}
+                            filename={doc.standardized_name}
                             className="p-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700"
                             title="Download Langsung"
                           >
                             <Download size={14} />
-                          </a>
+                          </DocumentDownloadButton>
                         </div>
                       </div>
                     ))}
@@ -2420,7 +2462,6 @@ export default function DashboardWorkspace() {
                       time: new Date(doc.uploaded_at).toLocaleString("id-ID"),
                     })
                   }
-                  downloadUrl={getDocumentDownloadUrl}
                 />
               )}
             </div>
@@ -2458,7 +2499,6 @@ export default function DashboardWorkspace() {
 
               <EvidenceTable
                 docs={evidenceDocs}
-                downloadUrl={getDocumentDownloadUrl}
                 onUpload={() => {
                   setDocCategory("SOP");
                   setShowUploadEvidenceModal(true);
@@ -3043,14 +3083,13 @@ export default function DashboardWorkspace() {
                                             >
                                               <Eye size={14} /> Klik Lihat
                                             </button>
-                                            <a
-                                              href={getDocumentDownloadUrl(
-                                                doc.id
-                                              )}
+                                            <DocumentDownloadButton
+                                              docId={doc.id}
+                                              filename={doc.standardized_name}
                                               className="flex-1 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                                             >
                                               <Download size={14} /> Download
-                                            </a>
+                                            </DocumentDownloadButton>
                                           </div>
                                         </div>
                                       )
@@ -3484,12 +3523,13 @@ export default function DashboardWorkspace() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <a
-                  href={getDocumentDownloadUrl(previewDoc.id)}
+                <DocumentDownloadButton
+                  docId={previewDoc.id}
+                  filename={previewDoc.stdName}
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1.5"
                 >
                   <Download size={14} /> Download File
-                </a>
+                </DocumentDownloadButton>
                 <button
                   onClick={() => setPreviewDoc(null)}
                   className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white"
@@ -3499,11 +3539,7 @@ export default function DashboardWorkspace() {
               </div>
             </div>
             <div className="flex-1 bg-slate-100">
-              <iframe
-                src={getDocumentPreviewUrl(previewDoc.id)}
-                className="w-full h-full border-0"
-                title={previewDoc.title}
-              />
+              <DocumentPreviewFrame docId={previewDoc.id} title={previewDoc.title} />
             </div>
           </div>
         </div>

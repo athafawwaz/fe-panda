@@ -81,7 +81,8 @@ const emptyForm: CardForm = {
 // Disimpan di level modul agar status kartu bertahan saat user berpindah menu (komponen di-mount ulang)
 // dan file tidak dianalisis dua kali.
 const cardCache = new Map<string, CardState>();
-const analyzing = new Set<string>();
+// Analisis yang sedang berjalan: komponen yang di-mount ulang ikut menunggu promise yang sama.
+const analyzing = new Map<string, Promise<void>>();
 
 const formatSize = (bytes: number) =>
   bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -114,15 +115,32 @@ export default function AIUploadCard({
     setState((prev) => ({ ...prev, form: { ...prev.form, ...patch } }));
 
   useEffect(() => {
-    if (cardCache.has(entryId) || analyzing.has(entryId)) return;
-    analyzing.add(entryId);
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("message", message);
-    apiFetch<AIUploadAnalysis>("/ai/upload/analyze", { method: "POST", body: fd })
-      .then((analysis) => setState((prev) => ({ ...prev, status: "ready", analysis })))
-      .catch((err) => setState((prev) => ({ ...prev, status: "error", error: err.message })))
-      .finally(() => analyzing.delete(entryId));
+    const cached = cardCache.get(entryId);
+    if (cached) {
+      setStateRaw(cached);
+      return;
+    }
+    let pending = analyzing.get(entryId);
+    if (!pending) {
+      const fd = new FormData();
+      fd.append("file", file);
+      fd.append("message", message);
+      // Hasil ditulis ke cache modul (bukan lewat setState komponen) agar tetap tersimpan walau komponen
+      // yang memulai analisis sudah unmount.
+      pending = apiFetch<AIUploadAnalysis>("/ai/upload/analyze", { method: "POST", body: fd })
+        .then((analysis): CardState => ({ status: "ready", analysis, form: emptyForm }))
+        .catch((err): CardState => ({ status: "error", error: err.message, form: emptyForm }))
+        .then((next) => {
+          cardCache.set(entryId, next);
+          analyzing.delete(entryId);
+        });
+      analyzing.set(entryId, pending);
+    }
+    let active = true;
+    pending.then(() => active && setStateRaw(cardCache.get(entryId)!));
+    return () => {
+      active = false;
+    };
   }, [entryId]);
 
   const { status, analysis, form, result } = state;

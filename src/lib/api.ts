@@ -642,10 +642,38 @@ export async function streamAgenticChat(
   return result;
 }
 
-export function getDocumentPreviewUrl(docId: string): string {
-  return `${API_BASE_URL}/documents/${docId}/preview`;
+/**
+ * Ambil file dokumen lewat fetch terautentikasi (Bearer + header impersonate). Tidak ada token di URL;
+ * gagal (401/403/404/jaringan) selalu melempar ApiError, tidak ada fallback ke URL publik.
+ */
+export async function fetchDocumentBlob(
+  docId: string,
+  kind: "preview" | "download",
+  signal?: AbortSignal
+): Promise<Blob> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE_URL}/documents/${encodeURIComponent(docId)}/${kind}`, {
+      headers: authHeaders(),
+      signal,
+    });
+  } catch (err: any) {
+    if (err?.name === "AbortError") throw err;
+    throw new ApiError("Backend tidak dapat dihubungi. Pastikan server Go berjalan.", 0);
+  }
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new ApiError(data.error || `Request gagal (${res.status})`, res.status);
+  }
+  return res.blob();
 }
 
-export function getDocumentDownloadUrl(docId: string): string {
-  return `${API_BASE_URL}/documents/${docId}/download`;
+/** Unduh dokumen: fetch terautentikasi -> blob URL -> klik anchor sementara. */
+export async function downloadDocument(docId: string, filename: string): Promise<void> {
+  const url = URL.createObjectURL(await fetchDocumentBlob(docId, "download"));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }

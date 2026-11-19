@@ -2,7 +2,7 @@
 
 import React from "react";
 import { Search, X } from "lucide-react";
-import { avatarTone, initials } from "@/lib/uiFormat";
+import { initials } from "@/lib/uiFormat";
 
 export function SearchBox({
   value,
@@ -23,7 +23,7 @@ export function SearchBox({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-shadow [&::-webkit-search-cancel-button]:hidden"
+        className="w-full pl-10 pr-9 py-2.5 rounded-xl border border-slate-200 bg-white text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-600/15 transition-shadow [&::-webkit-search-cancel-button]:hidden"
       />
       {value && (
         <button
@@ -76,7 +76,7 @@ export function Avatar({ name, seed, size = "md" }: { name: string; seed?: strin
   const dims = size === "sm" ? "w-7 h-7 text-[10px]" : "w-9 h-9 text-xs";
   return (
     <span
-      className={`${dims} rounded-full bg-gradient-to-br ${avatarTone(seed ?? name)} text-white font-black flex items-center justify-center flex-shrink-0 shadow-sm`}
+      className={`${dims} rounded-full bg-[var(--ink)] text-white font-semibold flex items-center justify-center flex-shrink-0`}
       aria-hidden
     >
       {initials(name)}
@@ -101,18 +101,6 @@ export function EmptyState({
       <p className="font-bold text-slate-800">{title}</p>
       {description && <p className="text-sm text-slate-500 mt-1 max-w-sm">{description}</p>}
       {action && <div className="mt-5">{action}</div>}
-    </div>
-  );
-}
-
-export function StatPill({ icon, value, label }: { icon: React.ReactNode; value: number | string; label: string }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-3 rounded-2xl bg-white border border-slate-200/80">
-      <span className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">{icon}</span>
-      <span>
-        <span className="block text-lg font-black text-slate-900 leading-none tabular-nums">{value}</span>
-        <span className="block text-[11px] text-slate-500 mt-1">{label}</span>
-      </span>
     </div>
   );
 }

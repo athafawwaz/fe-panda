@@ -139,7 +139,7 @@ export default function RerankSettingsPanel({ notify }: { notify: (msg: string) 
     <div className="grid lg:grid-cols-12 gap-6">
       <form onSubmit={handleSave} className="lg:col-span-7 bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm space-y-5">
         <div>
-          <h3 className="font-black text-slate-900 text-base">Reranker Pencarian Agentic AI</h3>
+          <h3 className="font-black text-slate-900 text-base">Reranker pencarian asisten</h3>
           <p className="text-xs text-slate-500">
             Model cross-encoder yang menilai ulang kandidat hasil tool <code className="font-mono">search_documents</code>.
             Endpoint <code className="font-mono">POST /rerank</code> kompatibel Cohere, Jina, atau Voyage. Perubahan langsung berlaku.
@@ -303,7 +303,7 @@ export default function RerankSettingsPanel({ notify }: { notify: (msg: string) 
                       <span className="w-4 text-right font-bold text-slate-500">{i + 1}</span>
                       <span className="flex-1 min-w-0 truncate">{r.text}</span>
                       <span className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden" title={`Skor ${r.score.toFixed(3)}`}>
-                        <span className="block h-full rounded-full bg-violet-500" style={{ width: `${Math.max(4, Math.min(100, r.score * 100))}%` }} />
+                        <span className="block h-full rounded-full bg-blue-500" style={{ width: `${Math.max(4, Math.min(100, r.score * 100))}%` }} />
                       </span>
                       <span className="w-12 text-right font-mono text-[10px] text-slate-500">{r.score.toFixed(3)}</span>
                     </li>
@@ -351,7 +351,7 @@ export default function RerankSettingsPanel({ notify }: { notify: (msg: string) 
           <div className="flex items-center gap-2.5">
             <span
               className={`w-9 h-9 rounded-xl flex items-center justify-center ${
-                settings.enabled ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-500"
+                settings.enabled ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-500"
               }`}
             >
               <ListOrdered size={17} />

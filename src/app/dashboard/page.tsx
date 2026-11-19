@@ -40,7 +40,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Paperclip,
-  Brain,
+  Menu,
   Square,
   Reply,
   Forward,
@@ -53,14 +53,15 @@ import AgentTracePanel, { AnswerBasisChip, UsageBadge } from "@/components/Agent
 import MessageActions from "@/components/MessageActions";
 import TypewriterMarkdown from "@/components/TypewriterMarkdown";
 import FolderGrid from "@/components/FolderGrid";
+import { readiness } from "@/lib/readiness";
 import EvidenceTable from "@/components/EvidenceTable";
 import AuditLogTimeline from "@/components/AuditLogTimeline";
 import CustomSelect from "@/components/CustomSelect";
 import ApplicationDetail from "@/components/ApplicationDetail";
-import { shortName } from "@/lib/uiFormat";
+import DocumentDownloadButton from "@/components/DocumentDownloadButton";
+import DocumentPreviewFrame from "@/components/DocumentPreviewFrame";
+import { appStatusLabel, shortName } from "@/lib/uiFormat";
 import MasterUserTable from "@/components/MasterUserTable";
-import { StatPill } from "@/components/ListControls";
-import { triggerPageLoader } from "@/components/PageTransitionLoader";
 import {
   apiFetch,
   ApiError,
@@ -71,8 +72,6 @@ import {
   setImpersonation as storeImpersonation,
   isAdminRole,
   ROLE_LABELS,
-  getDocumentPreviewUrl,
-  getDocumentDownloadUrl,
   ImpersonationTarget,
   UserRole,
   UserProfile,
@@ -132,6 +131,8 @@ export default function DashboardWorkspace() {
   const [loading, setLoading] = useState(true);
   // Sidebar bisa diciutkan (hanya ikon) di layar lebar; pilihan diingat di browser
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Mobile: navigation is a drawer, closed by default so the task is visible first.
+  const [navOpen, setNavOpen] = useState(false);
   useEffect(() => {
     try {
       setSidebarCollapsed(localStorage.getItem("panda_sidebar_collapsed") === "1");
@@ -158,7 +159,6 @@ export default function DashboardWorkspace() {
     compliance_rate: 96,
     user_scope_label: "",
   });
-  const [teamDist, setTeamDist] = useState<Record<string, number>>({});
   const [folders, setFolders] = useState<AppFolder[]>([]);
   const [recentDocs, setRecentDocs] = useState<DocumentItem[]>([]);
   const [logs, setLogs] = useState<UploadAuditLog[]>([]);
@@ -266,6 +266,8 @@ export default function DashboardWorkspace() {
   const aiLiveShownRef = useRef(0); // karakter jawaban live yang sudah tampil (animasi mengetik)
   const aiScrolledAtRef = useRef(0);
   const aiAbortRef = useRef<AbortController | null>(null);
+  const aiSessionLoadRef = useRef<AbortController | null>(null); // muat riwayat sesi yang sedang berjalan
+  const aiSessionsReqRef = useRef(0); // hanya daftar sesi terbaru yang dipakai
   const aiInputRef = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // Riwayat chat tersimpan di server: sesi yang sedang dibuka & daftar sesi milik user
   const [aiSessionId, setAiSessionId] = useState<string | null>(null);
@@ -348,11 +350,11 @@ export default function DashboardWorkspace() {
   // Super Admin: "Lihat sebagai" segmen Tim/Branch (null = kembali ke tampilan Super Admin)
   const switchSegment = async (target: ImpersonationTarget | null) => {
     storeImpersonation(target);
+    aiSessionsReqRef.current++; // daftar sesi segmen lama tidak boleh masuk ke segmen baru
     setActiveMenu("dashboard");
     setSelectedFolder(null);
     setSelectedApp(null);
-    setAiHistory([]);
-    setAiPendingQuestion(null);
+    startNewAiChat(); // juga membatalkan stream / muat sesi segmen lama
     setMasterUsers([]);
     setEditingUserId(null);
     const effective = await loadIdentity();
@@ -381,7 +383,6 @@ export default function DashboardWorkspace() {
       ]);
 
       if (dashRes?.summary) setSummary(dashRes.summary);
-      if (dashRes?.team_distribution) setTeamDist(dashRes.team_distribution);
       if (dashRes?.recent_documents) setRecentDocs(dashRes.recent_documents);
       if (teamsRes?.teams) {
         const list: MasterTeam[] = teamsRes.teams;
@@ -827,8 +828,10 @@ export default function DashboardWorkspace() {
     aiLiveShownRef.current = 0;
     aiScrolledAtRef.current = 0;
     setAiLive(aiLiveRef.current);
+    aiSessionLoadRef.current?.abort(); // muat sesi yang belum selesai tidak boleh menimpa chat yang baru dikirim
     const controller = new AbortController();
     aiAbortRef.current = controller;
+    const isCurrent = () => aiAbortRef.current === controller;
     scrollToChatBottom();
 
     try {
@@ -842,21 +845,23 @@ export default function DashboardWorkspace() {
         },
         {
           onStep: (step) =>
-            updateAiLive((prev) => {
+            isCurrent() && updateAiLive((prev) => {
               const steps = prev.steps.some((s) => s.id === step.id)
                 ? prev.steps.map((s) => (s.id === step.id ? step : s))
                 : [...prev.steps, step];
               return { ...prev, steps };
             }),
-          onUsage: (usage) => updateAiLive((prev) => ({ ...prev, usage })),
-          onDelta: (text) => updateAiLive((prev) => ({ ...prev, answer: prev.answer + text })),
+          onUsage: (usage) => isCurrent() && updateAiLive((prev) => ({ ...prev, usage })),
+          onDelta: (text) => isCurrent() && updateAiLive((prev) => ({ ...prev, answer: prev.answer + text })),
           onReset: () => {
+            if (!isCurrent()) return;
             aiLiveShownRef.current = 0;
             updateAiLive((prev) => ({ ...prev, answer: "" }));
           },
         },
         controller.signal
       );
+      if (!isCurrent()) return; // chat dipindah / diganti: jawaban lama dibuang
       // Append chronologically (top-to-bottom like ChatGPT / Gemini); sisa jawaban lanjut "diketik" dari posisi live
       setAiHistory((prev) => [
         ...prev,
@@ -870,6 +875,7 @@ export default function DashboardWorkspace() {
       loadAllWorkspaceData();
       loadAiQuota();
     } catch (err: any) {
+      if (!isCurrent()) return;
       const live = aiLiveRef.current;
       if (err?.name === "AbortError" && live) {
         // Dihentikan user: tampilkan apa yang sudah dikerjakan (tidak disimpan ke riwayat)
@@ -904,12 +910,15 @@ export default function DashboardWorkspace() {
         notify(err.message);
       }
     } finally {
-      setAiPendingQuestion(null);
-      setAiPendingReplyTo(null);
-      aiLiveRef.current = null;
-      setAiLive(null);
-      aiAbortRef.current = null;
-      setAiLoading(false);
+      // Request lama yang sudah dilepas tidak boleh menimpa state request/chat yang lebih baru
+      if (isCurrent()) {
+        setAiPendingQuestion(null);
+        setAiPendingReplyTo(null);
+        aiLiveRef.current = null;
+        setAiLive(null);
+        aiAbortRef.current = null;
+        setAiLoading(false);
+      }
     }
   };
 
@@ -1040,8 +1049,10 @@ export default function DashboardWorkspace() {
   // ─── Riwayat Chat Agentic AI (tersimpan di server per user) ────────────────
 
   const loadAiSessions = async () => {
+    const req = ++aiSessionsReqRef.current;
     try {
       const res = await apiFetch<{ sessions: AIChatSession[] }>("/ai/chat/sessions");
+      if (req !== aiSessionsReqRef.current) return;
       setAiSessions(res.sessions || []);
     } catch {
       // Riwayat hanya pelengkap; chat tetap bisa dipakai walau daftar gagal dimuat
@@ -1071,19 +1082,36 @@ export default function DashboardWorkspace() {
     }
   };
 
-  const startNewAiChat = () => {
+  // Lepas stream / muat sesi yang masih berjalan: hasilnya tidak boleh menimpa percakapan yang baru dibuka
+  const cancelAiInflight = () => {
     aiAbortRef.current?.abort();
-    setAiHistory([]);
+    aiAbortRef.current = null;
+    aiSessionLoadRef.current?.abort();
+    aiSessionLoadRef.current = null;
+    aiLiveRef.current = null;
+    setAiLive(null);
     setAiPendingQuestion(null);
+    setAiPendingReplyTo(null);
+    setAiLoading(false);
+  };
+
+  const startNewAiChat = () => {
+    cancelAiInflight();
+    setAiHistory([]);
     setAiSessionId(null);
     setAiReplyTo(null);
   };
 
   const openAiSession = async (id: string) => {
+    cancelAiInflight();
+    const controller = new AbortController();
+    aiSessionLoadRef.current = controller;
     try {
       const res = await apiFetch<{ session: AIChatSession; messages: AIChatTurn[] }>(
-        `/ai/chat/sessions/${id}`
+        `/ai/chat/sessions/${id}`,
+        { signal: controller.signal }
       );
+      if (controller.signal.aborted) return; // sesi lain / chat baru dipilih saat memuat
       setAiHistory(res.messages.map((m) => ({ question: m.question, response: m.response, replyTo: m.reply_to })));
       const questionsFromSession = res.messages
         .map((m) => m.question?.trim())
@@ -1104,6 +1132,7 @@ export default function DashboardWorkspace() {
       setShowAiSessions(false);
       scrollToChatBottom();
     } catch (err: any) {
+      if (controller.signal.aborted) return;
       notify(err.message);
       loadAiSessions();
     }
@@ -1119,6 +1148,17 @@ export default function DashboardWorkspace() {
       notify(err.message);
     }
   };
+
+  // Unmount (mis. logout / pindah halaman): putus stream & muat sesi, lepas ref agar callback lama tak berefek
+  useEffect(
+    () => () => {
+      aiAbortRef.current?.abort();
+      aiAbortRef.current = null;
+      aiSessionLoadRef.current?.abort();
+      aiSessionLoadRef.current = null;
+    },
+    []
+  );
 
   // Muat daftar riwayat chat & shortcut AI saat membuka menu Agentic AI
   useEffect(() => {
@@ -1216,10 +1256,6 @@ export default function DashboardWorkspace() {
 
   const handleLogout = () => {
     clearAuthSession();
-    triggerPageLoader({
-      targetPath: "/",
-      customTitle: "Menutup Sesi & Kembali ke Halaman Utama",
-    });
     router.push("/");
   };
 
@@ -1243,7 +1279,7 @@ export default function DashboardWorkspace() {
     user.branch ? ` • ${user.branch.branch_name}` : ""
   }`;
 
-  // Tombol 📎 lampirkan dokumen di chat Agentic AI (disembunyikan saat impersonate karena read-only)
+  // Tombol lampirkan dokumen di chat Agentic AI (disembunyikan saat impersonate karena read-only)
   const renderAttachButton = () =>
     !isImpersonating && (
       <button
@@ -1254,7 +1290,7 @@ export default function DashboardWorkspace() {
             ? "bg-blue-600 text-white"
             : "bg-slate-100 text-slate-500 hover:bg-blue-50 hover:text-blue-700"
         }`}
-        title="Lampirkan dokumen untuk diunggah via Agentic AI (atau drag & drop ke area chat)"
+        title="Lampirkan dokumen untuk diunggah lewat asisten (atau seret ke area chat)"
       >
         <Paperclip size={16} />
       </button>
@@ -1268,17 +1304,15 @@ export default function DashboardWorkspace() {
       aria-pressed={aiThinking}
       title={
         aiThinking
-          ? "Thinking aktif: AI mencari berkali-kali, membaca lebih dalam, dan menilai ulang temuan sebelum menjawab"
-          : "Aktifkan Thinking untuk pencarian yang lebih luas & mendalam (lebih lama, memakai lebih banyak token)"
+          ? "Penelusuran mendalam aktif: mencari di lebih banyak dokumen sebelum menjawab (lebih lama)"
+          : "Aktifkan penelusuran mendalam untuk pertanyaan yang butuh banyak sumber (lebih lama)"
       }
-      className={`h-9 px-3 rounded-xl flex items-center gap-1.5 text-xs font-bold flex-shrink-0 transition-all ${
-        aiThinking
-          ? "bg-gradient-to-r from-violet-600 to-indigo-600 text-white shadow-md shadow-violet-600/25"
-          : "bg-slate-100 text-slate-500 hover:bg-violet-50 hover:text-violet-700"
+      className={`h-9 px-3 rounded-xl flex items-center gap-1.5 text-xs font-semibold flex-shrink-0 transition-colors ${
+        aiThinking ? "bg-[var(--ink)] text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"
       }`}
     >
-      <Brain size={15} />
-      Thinking
+      <Layers size={15} aria-hidden />
+      Telusuri mendalam
     </button>
   );
 
@@ -1316,15 +1350,14 @@ export default function DashboardWorkspace() {
     if (!live || live.steps.length === 0) label = live?.thinking ? "Memahami pertanyaan" : "Menelusuri repositori";
     else if (running?.kind === "answer") label = "Menyusun jawaban";
     if (!label) return null;
-    const thinking = !!live?.thinking;
     return (
       <div className="bg-white rounded-3xl rounded-tl-md px-5 py-3.5 border border-blue-200 shadow-sm inline-flex items-center gap-3 ai-fade-up">
-        <span className={`flex items-center gap-1 ${thinking ? "text-violet-500" : "text-blue-500"}`}>
+        <span className="flex items-center gap-1 text-slate-500">
           <span className="ai-typing-dot" />
           <span className="ai-typing-dot" />
           <span className="ai-typing-dot" />
         </span>
-        <span className={`text-xs font-bold ai-shimmer-text ${thinking ? "text-violet-800" : "text-slate-600"}`}>
+        <span className="text-xs font-bold text-slate-600" role="status">
           {label}…
         </span>
       </div>
@@ -1396,32 +1429,12 @@ export default function DashboardWorkspace() {
       </form>
     );
 
-  // Sapaan, tanggal, & kalender mengikuti waktu lokal (bukan hardcode)
-  const now = new Date();
-  const hour = now.getHours();
-  const greeting =
-    hour < 11
-      ? "Selamat Pagi ☀️"
-      : hour < 15
-      ? "Selamat Siang 🌤️"
-      : hour < 18
-      ? "Selamat Sore 🌇"
-      : "Selamat Malam 🌙";
-  const todayLabel = now.toLocaleDateString("id-ID", {
-    weekday: "long",
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
-  const monthLabel = now.toLocaleDateString("id-ID", {
-    month: "long",
-    year: "numeric",
-  });
-  const firstWeekday = new Date(now.getFullYear(), now.getMonth(), 1).getDay();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const readinessState = readiness(folders);
+  const hour = new Date().getHours();
+  const greeting = hour < 11 ? "Selamat pagi" : hour < 15 ? "Selamat siang" : hour < 18 ? "Selamat sore" : "Selamat malam";
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] flex flex-col lg:flex-row font-sans text-slate-900">
+    <div className="workspace min-h-screen flex flex-col lg:flex-row text-slate-900">
       {/* Toast Notification */}
       {toastMsg && (
         <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-5 py-3.5 rounded-2xl shadow-2xl border border-blue-500/40 flex items-center gap-3 animate-bounce">
@@ -1431,8 +1444,11 @@ export default function DashboardWorkspace() {
       )}
 
       {/* ─── SIDEBAR NAVIGASI KIRI (FLOWORA LAYOUT IN CORPORATE BLUE BUMN) ─── */}
+      {navOpen && <div className="nav-scrim lg:hidden" onClick={() => setNavOpen(false)} aria-hidden />}
       <aside
-        className={`w-full bg-white border-b lg:border-b-0 lg:border-r border-slate-200/80 flex flex-col p-5 flex-shrink-0 lg:sticky lg:top-0 lg:h-screen lg:self-start transition-[width] duration-200 ${
+        id="workspace-nav"
+        aria-label="Navigasi ruang kerja"
+        className={`nav-drawer ${navOpen ? "is-open" : ""} bg-white lg:border-r border-slate-200/80 flex flex-col p-5 flex-shrink-0 lg:sticky lg:top-0 lg:h-screen lg:self-start transition-[width] duration-200 ${
           sidebarCollapsed ? "lg:w-20 lg:p-3" : "lg:w-72"
         }`}
       >
@@ -1469,32 +1485,31 @@ export default function DashboardWorkspace() {
           <div className="space-y-5">
             {[
               {
-                title: "Menu Utama",
-                items: [{ id: "dashboard", label: "Dashboard Utama", icon: Home }],
+                title: "Ruang kerja",
+                items: [{ id: "dashboard", label: "Ringkasan", icon: Home }],
               },
               {
-                title: "Asisten Cerdas",
+                title: "Temukan dokumen",
                 items: [
                   {
                     id: "agentic",
-                    label: "PANDA Agentic AI",
-                    icon: Sparkles,
-                    highlight: true,
+                    label: "Asisten dokumen",
+                    icon: Search,
                   },
                 ],
               },
               {
-                title: "Manajemen Konten",
+                title: "Kelola dokumen",
                 items: [
                   {
                     id: "applications",
-                    label: "Aplikasi & Versioning",
+                    label: "Dokumen aplikasi",
                     icon: FolderKanban,
                     badge: summary.total_apps,
                   },
                   {
                     id: "evidence",
-                    label: "Evidence (Bahan AI)",
+                    label: "Evidence audit",
                     icon: FileText,
                     badge: summary.total_evidence_docs,
                   },
@@ -1507,18 +1522,18 @@ export default function DashboardWorkspace() {
                     ? [
                         {
                           id: "master_access",
-                          label: "Master Akses & Tim",
+                          label: "Akses & tim",
                           icon: ShieldCheck,
                         },
                       ]
                     : []),
                   {
                     id: "logs",
-                    label: "Log Upload & Audit",
+                    label: "Log aktivitas",
                     icon: History,
                   },
                   ...(isSuperAdmin && !isImpersonating
-                    ? [{ id: "docs", label: "Docs", icon: BookOpen }]
+                    ? [{ id: "docs", label: "Panduan teknis", icon: BookOpen }]
                     : []),
                 ],
               },
@@ -1542,18 +1557,18 @@ export default function DashboardWorkspace() {
                         key={item.id}
                         onClick={() => {
                           setActiveMenu(item.id as ActiveMenu);
+                          setNavOpen(false);
                           if (item.id === "applications") {
                             setSelectedApp(null);
                           }
                         }}
                         title={item.label}
+                        aria-current={active ? "page" : undefined}
                         className={`w-full flex items-center justify-between px-4 py-3 rounded-2xl text-sm font-bold transition-all duration-200 ${
                           sidebarCollapsed ? "lg:justify-center lg:px-0" : ""
                         } ${
                           active
-                            ? `bg-blue-600 text-white shadow-lg shadow-blue-600/25 ${item.highlight ? "panda-glow" : ""}`
-                            : item.highlight
-                            ? "panda-glow bg-white text-blue-700 hover:bg-blue-50/80"
+                            ? "bg-blue-600 text-white"
                             : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
                         }`}
                       >
@@ -1649,25 +1664,10 @@ export default function DashboardWorkspace() {
                 ))}
               </CustomSelect>
             )}
-            <Link
-              href="/"
-              title="Kembali ke Landing Page"
-              className="flex w-full items-center justify-center gap-2 px-4 py-2.5 rounded-2xl bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700 transition-colors"
-            >
-              <Globe size={14} />
-              <span className={sidebarCollapsed ? "lg:hidden" : ""}>Landing Page</span>
-            </Link>
-
-          <button
-            onClick={handleLogout}
-            title="Keluar"
-            className="w-full flex items-center justify-center gap-2 py-3 px-4 rounded-2xl border border-slate-200 text-xs font-bold text-rose-600 hover:bg-rose-50 transition-colors"
-          >
-            <LogOut size={15} />
-            <span className={sidebarCollapsed ? "lg:hidden" : ""}>
-              Keluar (Badge: {realUser?.badge_number || user.badge_number})
-            </span>
-          </button>
+          <div className={`sidebar-foot ${sidebarCollapsed ? "is-collapsed" : ""}`}>
+            <Link href="/" title="Beranda PANDA"><Globe size={14} /><span>Beranda</span></Link>
+            <button onClick={handleLogout} title={`Keluar (badge ${realUser?.badge_number || user.badge_number})`}><LogOut size={14} /><span>Keluar</span></button>
+          </div>
         </div>
       </aside>
 
@@ -1675,13 +1675,22 @@ export default function DashboardWorkspace() {
       <div className="flex-1 flex flex-col min-w-0">
         {/* Top Bar (Flowora Search + User Profile Pill) */}
         <header className="bg-white/80 backdrop-blur-xl border-b border-slate-200/70 px-6 py-4 flex flex-wrap items-center justify-between gap-4 sticky top-0 z-30">
-          {/* Quick AI Search Bar */}
+          <button
+            type="button"
+            className="nav-toggle icon-btn"
+            onClick={() => setNavOpen(true)}
+            aria-label="Buka navigasi"
+            aria-expanded={navOpen}
+            aria-controls="workspace-nav"
+          >
+            <Menu size={20} />
+          </button>
           <form
             onSubmit={(e) => {
               e.preventDefault();
               handleAskAgenticAI();
             }}
-            className="relative flex-1 max-w-xl"
+            className={`relative flex-1 max-w-xl ${activeMenu === "agentic" ? "hidden" : ""}`}
           >
             <Search
               size={17}
@@ -1691,25 +1700,22 @@ export default function DashboardWorkspace() {
               type="text"
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
-              placeholder="Cari dokumen PRD, UAT, BAST, atau Evidence via Agentic AI..."
+              aria-label="Cari dokumen berdasarkan isi"
+              placeholder="Cari isi dokumen, aplikasi, atau bukti audit…"
               className="w-full pl-11 pr-28 py-2.5 rounded-full bg-slate-100/90 border border-slate-200/80 text-sm focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 outline-none transition-all"
             />
             <button
               type="submit"
               className="absolute right-1.5 top-1/2 -translate-y-1/2 px-3.5 py-1.5 rounded-full bg-blue-600 text-white text-xs font-bold flex items-center gap-1 hover:bg-blue-700 transition-colors"
             >
-              <Sparkles size={12} /> Tanya AI
+              <Search size={12} /> Cari
             </button>
           </form>
 
           {/* Right User Badge Info */}
           <div className="flex items-center gap-3">
-            <span className="hidden 2xl:inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-blue-50 border border-blue-200 text-blue-700 text-xs font-bold">
-              <ShieldCheck size={14} />
-              Badge: {user.badge_number} • {user.role}
-            </span>
             <div className="flex items-center gap-2.5 pl-2 border-l border-slate-200">
-              <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-600 to-sky-400 text-white font-black text-xs flex items-center justify-center shadow-sm">
+              <div className="w-9 h-9 rounded-full bg-[var(--ink)] text-white font-semibold text-xs flex items-center justify-center">
                 {user.full_name.slice(0, 2).toUpperCase()}
               </div>
               <div className="hidden sm:block text-left">
@@ -1756,512 +1762,97 @@ export default function DashboardWorkspace() {
               TAB 1: DASHBOARD UTAMA (BENTO GRID CORPORATE BLUE - SCREENSHOT 1)
              =================================================================== */}
           {activeMenu === "dashboard" && (
-            <div className="grid xl:grid-cols-12 gap-6">
-              {/* Left/Center 8 Columns */}
-              <div className="xl:col-span-8 space-y-6">
-                {/* Greeting Banner + 4 KPI Cards (Flowora Top Card in Corporate Blue) */}
-                <div className="bg-white rounded-[2rem] p-6 sm:p-7 border border-slate-200/80 shadow-sm relative overflow-hidden">
-                  <div className="rounded-3xl bg-gradient-to-r from-[#0f172a] via-[#1d4ed8] to-[#0284c7] p-6 sm:p-8 text-white relative overflow-hidden mb-6">
-                    <div className="absolute right-[-5%] top-[-20%] w-64 h-64 bg-cyan-300/20 rounded-full blur-3xl pointer-events-none" />
-                    <div className="relative z-10 flex flex-col sm:flex-row sm:items-center justify-between gap-6">
-                      <div>
-                        <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 backdrop-blur-md text-cyan-200 text-[11px] font-bold uppercase tracking-wider mb-3">
-                          🐼 PANDA Governance Workspace
-                        </span>
-                        <p className="text-sm font-semibold text-blue-100 mb-0.5">
-                          {greeting}
-                        </p>
-                        <h1 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight mb-2">
-                          {user.full_name}
-                        </h1>
-                        <p className="text-blue-100 text-xs sm:text-sm max-w-xl">
-                          &ldquo;Sentralisasi, Standardisasi, dan Reusability
-                          Evidence Audit TI PT Pupuk Sriwidjaja Palembang.&rdquo;
-                        </p>
-                      </div>
+            <div className="overview">
+              <section className="overview-hero">
+                <p className="overview-greeting">{greeting}, {user.full_name.split(" (")[0]}</p>
+                <h1>Kesiapan dokumen audit</h1>
+                <p className="overview-lede">
+                  {readinessState.sections === 0
+                    ? "Belum ada versi aplikasi dalam cakupan Anda."
+                    : `${readinessState.complete} dari ${readinessState.sections} versi aplikasi sudah memiliki dokumen wajib.`}
+                </p>
+              </section>
 
-                      <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-2xl p-4 sm:text-right flex-shrink-0">
-                        <p className="text-xs font-bold text-cyan-200 uppercase tracking-wider">
-                          {todayLabel}
-                        </p>
-                        <p className="text-lg font-black text-white mt-0.5">
-                          Badge #{user.badge_number}
-                        </p>
-                        <p className="text-[11px] text-blue-100">
-                          {summary.user_scope_label}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 4 Bento KPI Cards */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                    {[
-                      {
-                        label: "Folder Tim",
-                        val: summary.total_folders,
-                        sub: "Folder Ter-assign",
-                        icon: FolderKanban,
-                        bg: "bg-blue-50/90 border-blue-100",
-                        iconBg: "bg-blue-600 text-white",
-                      },
-                      {
-                        label: "Total Aplikasi",
-                        val: summary.total_apps,
-                        sub: "Ber-versioning",
-                        icon: Layers,
-                        bg: "bg-sky-50/90 border-sky-100",
-                        iconBg: "bg-sky-500 text-white",
-                      },
-                      {
-                        label: "Dokumen SDLC",
-                        val: summary.total_app_docs,
-                        sub: "PRD • UAT • BAST",
-                        icon: FileCheck,
-                        bg: "bg-indigo-50/90 border-indigo-100",
-                        iconBg: "bg-indigo-600 text-white",
-                      },
-                      {
-                        label: "Evidence AI",
-                        val: summary.total_evidence_docs,
-                        sub: "Lintas Tim TI",
-                        icon: Sparkles,
-                        bg: "bg-emerald-50/90 border-emerald-100",
-                        iconBg: "bg-emerald-600 text-white",
-                      },
-                    ].map((k) => (
-                      <div
-                        key={k.label}
-                        className={`p-4 rounded-2xl border ${k.bg} flex flex-col gap-3 min-w-0 transition-transform hover:-translate-y-1`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <div
-                            className={`w-10 h-10 rounded-xl ${k.iconBg} flex items-center justify-center shadow-sm flex-shrink-0`}
-                          >
-                            <k.icon size={19} />
-                          </div>
-                          <p className="text-2xl font-black text-slate-900 leading-none tabular-nums">
-                            {k.val}
-                          </p>
-                        </div>
+              <section className="overview-recent" aria-labelledby="gaps-title">
+                <header>
+                  <h2 id="gaps-title">{readinessState.sections === 0 ? "Belum ada aplikasi" : "Perlu dilengkapi"}</h2>
+                  <button onClick={() => setActiveMenu("applications")}>Buka dokumen aplikasi</button>
+                </header>
+                {readinessState.gaps.length === 0 ? (
+                  <p className="overview-empty">
+                    {readinessState.sections === 0 ? "Belum ada aplikasi. Daftarkan aplikasi pertama untuk mulai melacak dokumen wajib." : "Semua versi sudah lengkap."}
+                  </p>
+                ) : (
+                  <ul>
+                    {readinessState.gaps.slice(0, 6).map((g) => (
+                      <li key={g.section.id}>
+                        <FolderKanban size={18} aria-hidden="true" />
                         <div className="min-w-0">
-                          <p className="text-xs font-bold text-slate-700 truncate">
-                            {k.label}
-                          </p>
-                          <p className="text-[11px] font-semibold text-blue-700 truncate">
-                            {k.sub}
-                          </p>
+                          <p className="overview-doc-title">{g.app.app_name} · {g.section.version_label}</p>
+                          <p className="overview-doc-meta">{g.folder.folder_name} · {g.section.section_title}</p>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Middle Row: 3 Bento Cards (Upload Trend, Donut Chart, Live Upload Activity) */}
-                <div className="grid md:grid-cols-3 gap-6">
-                  {/* Card 1: Kepatuhan & Pertumbuhan Dokumen */}
-                  <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-col justify-between">
-                    <div>
-                      <span className="block text-xs font-bold text-slate-800 mb-3">
-                        Total Terindeks AI
-                      </span>
-                      <p className="text-3xl font-black text-slate-900">
-                        {summary.total_all_docs}{" "}
-                        <span className="text-sm font-semibold text-slate-500">
-                          Dokumen
+                        <span className="overview-missing">
+                          {g.missing.map((c) => <span key={c}>{c}</span>)}
                         </span>
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Seluruh versi awal & perubahan tersimpan utuh
-                      </p>
-                      <span className="inline-block mt-2.5 px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[11px] font-bold whitespace-nowrap">
-                        +100% Terpusat
-                      </span>
-                    </div>
-
-                    {/* Smooth Corporate Blue SVG Area Chart */}
-                    <div className="mt-6">
-                      <svg viewBox="0 0 240 80" className="w-full h-24 overflow-visible">
-                        <defs>
-                          <linearGradient id="blueArea" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#2563eb" stopOpacity="0.35" />
-                            <stop offset="100%" stopColor="#38bdf8" stopOpacity="0.0" />
-                          </linearGradient>
-                        </defs>
-                        <path
-                          d="M0,65 Q40,55 75,42 T150,28 T240,10 L240,80 L0,80 Z"
-                          fill="url(#blueArea)"
-                        />
-                        <path
-                          d="M0,65 Q40,55 75,42 T150,28 T240,10"
-                          fill="none"
-                          stroke="#2563eb"
-                          strokeWidth="3"
-                          strokeLinecap="round"
-                        />
-                        <circle cx="150" cy="28" r="4" fill="#2563eb" />
-                        <circle cx="240" cy="10" r="5" fill="#0284c7" />
-                      </svg>
-                      <div className="flex justify-between text-[10px] font-bold text-slate-400 mt-1">
-                        <span>Q1</span>
-                        <span>Q2</span>
-                        <span>Q3</span>
-                        <span>Q4 2026</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Card 2: Donut Chart Cakupan Tim */}
-                  <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-col justify-between">
-                    <div className="flex items-start justify-between gap-2 mb-3">
-                      <span className="text-xs font-bold text-slate-800 min-w-0">
-                        Kepatuhan Audit TI
-                      </span>
-                      <span className="text-xs font-extrabold text-blue-600">
-                        {summary.compliance_rate}%
-                      </span>
-                    </div>
-
-                    <div className="flex flex-col items-center gap-4 my-auto">
-                      <div className="relative w-24 h-24 flex items-center justify-center flex-shrink-0">
-                        <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
-                          <path
-                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                            fill="none"
-                            stroke="#e2e8f0"
-                            strokeWidth="3.8"
-                          />
-                          <path
-                            d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                            fill="none"
-                            stroke="#2563eb"
-                            strokeWidth="3.8"
-                            strokeDasharray={`${summary.compliance_rate}, 100`}
-                            strokeLinecap="round"
-                          />
-                        </svg>
-                        <span className="absolute text-lg font-black text-blue-950">
-                          {summary.compliance_rate}%
-                        </span>
-                      </div>
-
-                      <div className="space-y-1.5 text-xs w-full">
-                        {Object.entries(teamDist).map(([tName, cnt]) => (
-                          <div
-                            key={tName}
-                            className="flex items-center justify-between gap-3 text-[11px]"
-                          >
-                            <span className="text-slate-600 truncate min-w-0">
-                              {tName.replace("Tim ", "")}
-                            </span>
-                            <span className="font-bold text-slate-900 flex-shrink-0 tabular-nums">
-                              {cnt}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    <p className="text-[11px] text-emerald-600 font-bold mt-3">
-                      ✓ Standar Penamaan & Versioning Aktif
-                    </p>
-                  </div>
-
-                  {/* Card 3: Live Team Upload Activity */}
-                  <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-col justify-between">
-                    <div className="flex items-start justify-between gap-2 mb-3">
-                      <span className="text-xs font-bold text-slate-800 min-w-0">
-                        Log Upload Terbaru
-                      </span>
-                      <button
-                        onClick={() => setActiveMenu("logs")}
-                        className="text-[11px] font-bold text-blue-600 hover:underline whitespace-nowrap"
-                      >
-                        Semua →
-                      </button>
-                    </div>
-
-                    <div className="space-y-3 my-auto">
-                      {logs.slice(0, 3).map((lg) => (
-                        <div key={lg.id} className="flex items-start gap-2.5">
-                          <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 font-black text-[10px] flex items-center justify-center flex-shrink-0 mt-0.5">
-                            {lg.user_name.slice(0, 2).toUpperCase()}
-                          </div>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-xs font-bold text-slate-800 truncate">
-                              {lg.user_name}{" "}
-                              <span className="text-[10px] font-semibold text-blue-600">
-                                ({lg.badge_number})
-                              </span>
-                            </p>
-                            <p className="text-[11px] text-slate-500 truncate">
-                              {lg.document_title || lg.detail_description}
-                            </p>
-                            <p className="text-[10px] text-slate-400">
-                              {new Date(lg.action_timestamp).toLocaleString(
-                                "id-ID"
-                              )}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Bottom Row: Folder & Aplikasi Terbaru + Quick Actions */}
-                <div className="grid md:grid-cols-12 gap-6">
-                  {/* Folder & Applications Card */}
-                  <div className="md:col-span-7 bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm">
-                    <div className="flex items-start justify-between gap-3 mb-4">
-                      <div className="min-w-0">
-                        <h3 className="font-bold text-slate-900 text-sm">
-                          Folder Tim & Aplikasi Terdaftar
-                        </h3>
-                        <p className="text-xs text-slate-500">
-                          Klik folder untuk melihat aplikasi & section perubahan
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => setActiveMenu("applications")}
-                        className="text-xs font-bold text-blue-600 hover:underline whitespace-nowrap flex-shrink-0"
-                      >
-                        Buka Semua →
-                      </button>
-                    </div>
-
-                    <div className="grid sm:grid-cols-2 gap-3.5">
-                      {folders.slice(0, 4).map((f) => (
-                        <div
-                          key={f.id}
+                        <button
                           onClick={() => {
-                            setSelectedFolder(f);
-                            setSelectedApp(null);
+                            setSelectedFolder(g.folder);
+                            setSelectedApp(g.app);
                             setActiveMenu("applications");
                           }}
-                          className="p-4 rounded-2xl border border-slate-200/80 hover:border-blue-500 hover:shadow-md transition-all cursor-pointer group bg-slate-50/50 min-w-0"
+                          aria-label={`Lengkapi ${g.app.app_name} ${g.section.version_label}`}
+                          title="Lengkapi"
                         >
-                          <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-sm mb-3">
-                            <FolderKanban size={18} />
-                          </div>
-                          <h4 className="font-bold text-slate-900 text-sm group-hover:text-blue-600 transition-colors truncate">
-                            {f.folder_name}
-                          </h4>
-                          <p className="text-[11px] text-slate-500 mt-0.5">
-                            {f.applications?.length || 0} Aplikasi Terdaftar
-                          </p>
-                          <span className="inline-block max-w-full truncate mt-2.5 text-[10px] font-bold px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">
-                            {f.assigned_team?.team_name.replace("Tim ", "")}
-                            {f.assigned_branch
-                              ? ` • ${f.assigned_branch.branch_name}`
-                              : ""}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Quick Actions Grid (Flowora Style in Corporate Blue) */}
-                  <div className="md:col-span-5 bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm">
-                    <h3 className="font-bold text-slate-900 text-sm mb-4">
-                      Aksi Cepat (Quick Actions)
-                    </h3>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button
-                        onClick={() => {
-                          setActiveMenu("evidence");
-                          setShowUploadEvidenceModal(true);
-                        }}
-                        className="p-3.5 rounded-2xl bg-blue-50 hover:bg-blue-100 text-blue-700 flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all"
-                      >
-                        <Upload size={20} />
-                        Upload Evidence
-                      </button>
-                      <button
-                        onClick={() => setActiveMenu("applications")}
-                        className="p-3.5 rounded-2xl bg-sky-50 hover:bg-sky-100 text-sky-700 flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all"
-                      >
-                        <FolderKanban size={20} />
-                        Buka Aplikasi
-                      </button>
-                      <button
-                        onClick={() => setActiveMenu("agentic")}
-                        className="p-3.5 rounded-2xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all"
-                      >
-                        <Sparkles size={20} />
-                        Tanya Agentic AI
-                      </button>
-                      <button
-                        onClick={() =>
-                          setActiveMenu(
-                            isAdmin ? "master_access" : "logs"
-                          )
-                        }
-                        className="p-3.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 text-emerald-700 flex flex-col items-center justify-center gap-1.5 text-xs font-bold transition-all"
-                      >
-                        <ShieldCheck size={20} />
-                        {isAdmin ? "Master Akses" : "Log Upload"}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Right 4 Columns (Calendar, Recent Docs, & Mini PANDA AI Launcher) */}
-              <div className="xl:col-span-4 space-y-6">
-                {/* Calendar Card */}
-                <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center flex-shrink-0">
-                      <CalendarIcon size={17} />
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-bold text-sm text-slate-900 leading-tight">
-                        Jadwal & Periode Audit
-                      </p>
-                      <p className="text-[11px] font-bold text-blue-600">
-                        {monthLabel}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-7 gap-1 text-center text-xs mb-2">
-                    {["Min", "Sen", "Sel", "Rab", "Kam", "Jum", "Sab"].map(
-                      (d) => (
-                        <span key={d} className="text-[10px] font-bold text-slate-400 py-1">
-                          {d}
-                        </span>
-                      )
-                    )}
-                    {Array.from({ length: firstWeekday }, (_, idx) => (
-                      <div key={`pad-${idx}`} />
+                          <ChevronRight size={16} />
+                        </button>
+                      </li>
                     ))}
-                    {Array.from({ length: daysInMonth }, (_, idx) => idx + 1).map(
-                      (day) => (
-                        <div
-                          key={day}
-                          className={`py-1.5 rounded-xl font-bold text-xs ${
-                            day === now.getDate()
-                              ? "bg-blue-600 text-white shadow-md shadow-blue-600/30"
-                              : "text-slate-700 hover:bg-slate-100"
-                          }`}
-                        >
-                          {day}
-                        </div>
-                      )
-                    )}
-                  </div>
-                </div>
+                  </ul>
+                )}
+                {readinessState.gaps.length > 6 && (
+                  <p className="overview-empty">dan {readinessState.gaps.length - 6} versi lainnya.</p>
+                )}
+              </section>
 
-                {/* Recent Documents Card with Direct Preview & Download */}
-                <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm">
-                  <div className="flex items-start justify-between gap-3 mb-4">
-                    <span className="font-bold text-sm text-slate-900 leading-tight min-w-0">
-                      Dokumen & Evidence Terbaru
-                    </span>
-                    <button
-                      onClick={() => setActiveMenu("evidence")}
-                      className="text-xs font-bold text-blue-600 hover:underline whitespace-nowrap flex-shrink-0"
-                    >
-                      Lihat Semua →
-                    </button>
-                  </div>
-                  <div className="space-y-3">
-                    {recentDocs.slice(0, 4).map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="p-3 rounded-2xl bg-slate-50 border border-slate-200/60 flex items-center justify-between gap-3"
-                      >
+              <section className="overview-recent" aria-labelledby="recent-title">
+                <header>
+                  <h2 id="recent-title">Terakhir diunggah</h2>
+                  <button onClick={() => setActiveMenu("evidence")}>Lihat semua</button>
+                </header>
+                {recentDocs.length === 0 ? (
+                  <p className="overview-empty">Belum ada dokumen dalam cakupan akses Anda.</p>
+                ) : (
+                  <ul>
+                    {recentDocs.slice(0, 5).map((doc) => (
+                      <li key={doc.id}>
+                        <FileText size={18} aria-hidden="true" />
                         <div className="min-w-0">
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-2 py-0.5 rounded bg-blue-100 text-blue-800 text-[10px] font-extrabold">
-                              {doc.doc_category}
-                            </span>
-                            <span className="text-[10px] font-bold text-slate-500">
-                              {doc.version_label}
-                            </span>
-                          </div>
-                          <p className="text-xs font-bold text-slate-900 truncate mt-1">
-                            {doc.title}
-                          </p>
-                          <p className="text-[10px] text-slate-500 truncate">
-                            Oleh: {doc.uploaded_by_name} ({doc.uploaded_by_badge})
-                          </p>
+                          <p className="overview-doc-title">{doc.title}</p>
+                          <p className="overview-doc-meta">{doc.doc_category} · {doc.version_label} · {doc.uploaded_by_name}</p>
                         </div>
-                        <div className="flex items-center gap-1.5 flex-shrink-0">
-                          <button
-                            onClick={() =>
-                              setPreviewDoc({
-                                id: doc.id,
-                                title: doc.title,
-                                stdName: doc.standardized_name,
-                                uploader: `${doc.uploaded_by_name} (${doc.uploaded_by_badge})`,
-                                time: new Date(doc.uploaded_at).toLocaleString(
-                                  "id-ID"
-                                ),
-                              })
-                            }
-                            className="p-2 rounded-xl bg-white border border-slate-200 text-blue-600 hover:bg-blue-50"
-                            title="Lihat Dokumen"
-                          >
-                            <Eye size={14} />
-                          </button>
-                          <a
-                            href={getDocumentDownloadUrl(doc.id)}
-                            className="p-2 rounded-xl bg-blue-600 text-white hover:bg-blue-700"
-                            title="Download Langsung"
-                          >
-                            <Download size={14} />
-                          </a>
-                        </div>
-                      </div>
+                        <button
+                          onClick={() =>
+                            setPreviewDoc({
+                              id: doc.id,
+                              title: doc.title,
+                              stdName: doc.standardized_name,
+                              uploader: `${doc.uploaded_by_name} (${doc.uploaded_by_badge})`,
+                              time: new Date(doc.uploaded_at).toLocaleString("id-ID"),
+                            })
+                          }
+                          aria-label={`Lihat ${doc.title}`}
+                          title="Lihat"
+                        >
+                          <Eye size={16} />
+                        </button>
+                        <DocumentDownloadButton docId={doc.id} filename={doc.standardized_name} title="Unduh">
+                          <Download size={16} />
+                        </DocumentDownloadButton>
+                      </li>
                     ))}
-                  </div>
-                </div>
-
-                {/* Flowora Bottom-Right AI Widget in Corporate Navy & Moving Blue Orb */}
-                <div className="rounded-3xl bg-gradient-to-br from-[#0f172a] via-[#1e3a8a] to-[#0f172a] p-6 text-white shadow-xl relative overflow-hidden">
-                  <div className="flex items-center justify-between mb-4">
-                    <div>
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-cyan-300">
-                        Asisten Audit Pintar
-                      </span>
-                      <h4 className="text-lg font-black">PANDA Agentic AI</h4>
-                    </div>
-                    <div
-                      onClick={() => setActiveMenu("agentic")}
-                      className="w-12 h-12 living-orb-core cursor-pointer"
-                    >
-                      <div className="living-orb-plasma" />
-                      <div className="living-orb-gloss" />
-                    </div>
-                  </div>
-                  <p className="text-xs text-blue-100 mb-4">
-                    Ketik dokumen UAT, PRD, BAST, atau Evidence untuk mendapatkan
-                    ringkasan & tombol download instan.
-                  </p>
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      handleAskAgenticAI();
-                    }}
-                    className="flex items-center gap-2 bg-white rounded-2xl p-1.5"
-                  >
-                    <input
-                      type="text"
-                      value={aiPrompt}
-                      onChange={(e) => setAiPrompt(e.target.value)}
-                      placeholder="Contoh: Cari UAT SIMSKBDN..."
-                      className="flex-1 px-3 py-2 text-xs text-slate-900 outline-none bg-transparent font-medium"
-                    />
-                    <button
-                      type="submit"
-                      className="w-9 h-9 rounded-xl bg-blue-600 hover:bg-blue-700 text-white flex items-center justify-center flex-shrink-0"
-                    >
-                      <Send size={14} />
-                    </button>
-                  </form>
-                </div>
-              </div>
+                  </ul>
+                )}
+              </section>
             </div>
           )}
 
@@ -2272,68 +1863,35 @@ export default function DashboardWorkspace() {
             <div className="space-y-6">
               {/* Top Header & Breadcrumb */}
               {!selectedApp && (
-                <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-wrap items-center justify-between gap-4">
+                <header className="page-head">
                   <div>
-                    <div className="flex items-center gap-2 text-xs font-bold text-blue-600 mb-1">
-                      <button
-                        onClick={() => {
-                          setSelectedFolder(null);
-                          setSelectedApp(null);
-                        }}
-                        className="hover:underline"
-                      >
-                        📁 Semua Folder Tim
-                      </button>
+                    <nav aria-label="Lokasi" className="page-crumbs">
                       {selectedFolder && (
                         <>
-                          <ChevronRight size={14} />
-                          <button
-                            onClick={() => setSelectedApp(null)}
-                            className="hover:underline"
-                          >
-                            {selectedFolder.folder_name}
-                          </button>
+                          <button onClick={() => { setSelectedFolder(null); setSelectedApp(null); }}>Dokumen aplikasi</button>
+                          <ChevronRight size={13} aria-hidden />
+                          <span aria-current="page">{selectedFolder.folder_name}</span>
                         </>
                       )}
-                    </div>
-                    <h2 className="text-2xl font-black text-slate-900">
+                    </nav>
+                    <h1>{selectedFolder ? selectedFolder.folder_name : "Dokumen aplikasi"}</h1>
+                    <p>
                       {selectedFolder
-                        ? `Folder: ${selectedFolder.folder_name}`
-                        : "Manajemen Folder Tim & Aplikasi SDLC"}
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">
-                      {selectedFolder
-                        ? `Di-assign ke: ${
-                            selectedFolder.assigned_team?.team_name || ""
-                          }${
-                            selectedFolder.assigned_branch
-                              ? ` • Branch: ${selectedFolder.assigned_branch.branch_name}`
-                              : ""
-                          }`
-                        : "Admin dapat membuat Folder dan meng-assign ke Tim/Branch tertentu."}
+                        ? [selectedFolder.assigned_team?.team_name, selectedFolder.assigned_branch?.branch_name].filter(Boolean).join(" · ") || "Belum ditetapkan ke tim"
+                        : "Dokumen SDLC per aplikasi dan versi, dikelompokkan per folder tim."}
                     </p>
                   </div>
-
-                  {/* Contextual Action Buttons */}
-                  <div className="flex items-center gap-3">
-                    {!selectedFolder && isAdmin && (
-                      <button
-                        onClick={() => setShowCreateFolderModal(true)}
-                        className="px-5 py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2"
-                      >
-                        <Plus size={16} /> Buat Folder & Assign Tim
-                      </button>
-                    )}
-                    {selectedFolder && !selectedApp && isAdmin && (
-                      <button
-                        onClick={() => setShowCreateAppModal(true)}
-                        className="px-5 py-3 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2"
-                      >
-                        <Plus size={16} /> Tambah Aplikasi di Folder Ini
-                      </button>
-                    )}
-                  </div>
-                </div>
+                  {isAdmin && !selectedFolder && (
+                    <button className="btn-primary" onClick={() => setShowCreateFolderModal(true)}>
+                      <Plus size={16} /> Folder baru
+                    </button>
+                  )}
+                  {isAdmin && selectedFolder && (
+                    <button className="btn-primary" onClick={() => setShowCreateAppModal(true)}>
+                      <Plus size={16} /> Aplikasi baru
+                    </button>
+                  )}
+                </header>
               )}
 
               {/* LEVEL 1: GRID FOLDER TIM */}
@@ -2348,50 +1906,37 @@ export default function DashboardWorkspace() {
 
               {/* LEVEL 2: DAFTAR APLIKASI DI DALAM FOLDER */}
               {selectedFolder && !selectedApp && (
-                <div className="space-y-4">
-                  <button
-                    onClick={() => setSelectedFolder(null)}
-                    className="inline-flex items-center gap-2 text-xs font-bold text-slate-600 hover:text-blue-600"
-                  >
-                    <ArrowLeft size={15} /> Kembali ke Daftar Folder Tim
-                  </button>
-
-                  <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {(selectedFolder.applications || []).map((app) => (
-                      <div
-                        key={app.id}
-                        onClick={() => openApplicationDetail(app.id)}
-                        className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm hover:shadow-xl hover:-translate-y-1.5 hover:border-blue-500 transition-all cursor-pointer group"
-                      >
-                        <div className="flex items-center justify-between mb-4">
-                          <span className="px-3 py-1 rounded-xl bg-blue-600 text-white text-xs font-black">
-                            {app.app_code}
-                          </span>
-                          <span className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[11px] font-bold">
-                            {app.status}
-                          </span>
-                        </div>
-                        <h3 className="text-lg font-black text-slate-900 group-hover:text-blue-600 mb-2">
-                          {app.app_name}
-                        </h3>
-                        <p className="text-xs text-slate-500 leading-relaxed mb-5 line-clamp-2">
-                          {app.description}
-                        </p>
-                        <div className="pt-4 border-t border-slate-100 flex items-center justify-between gap-3 text-xs">
-                          <span
-                            className="text-slate-500 font-medium min-w-0 truncate"
-                            title={`Dibuat oleh ${app.created_by_name} (Badge ${app.created_by_badge})`}
-                          >
-                            Oleh {shortName(app.created_by_name)}
-                          </span>
-                          <span className="text-blue-600 font-bold flex items-center gap-1 whitespace-nowrap flex-shrink-0">
-                            Lihat Versi <ChevronRight size={14} />
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                <section className="data-panel" aria-label="Aplikasi dalam folder">
+                  {(selectedFolder.applications || []).length === 0 ? (
+                    <p className="data-empty">Belum ada aplikasi di folder ini.</p>
+                  ) : (
+                    <table className="data-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Kode</th>
+                          <th scope="col">Aplikasi</th>
+                          <th scope="col">Status</th>
+                          <th scope="col">Dibuat oleh</th>
+                          <th scope="col"><span className="sr-only">Buka</span></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(selectedFolder.applications || []).map((app) => (
+                          <tr key={app.id} className="is-link" onClick={() => openApplicationDetail(app.id)}>
+                            <td><span className="code-tag">{app.app_code}</span></td>
+                            <td>
+                              <button className="row-title" onClick={(e) => { e.stopPropagation(); openApplicationDetail(app.id); }}>{app.app_name}</button>
+                              {app.description && <span className="row-sub">{app.description}</span>}
+                            </td>
+                            <td><span className="status-tag">{appStatusLabel(app.status)}</span></td>
+                            <td title={`Badge ${app.created_by_badge}`}>{shortName(app.created_by_name)}</td>
+                            <td className="cell-end"><ChevronRight size={16} aria-hidden /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </section>
               )}
 
               {/* LEVEL 3: DETAIL APLIKASI & RIWAYAT VERSI (SECTION PERUBAHAN) */}
@@ -2420,7 +1965,6 @@ export default function DashboardWorkspace() {
                       time: new Date(doc.uploaded_at).toLocaleString("id-ID"),
                     })
                   }
-                  downloadUrl={getDocumentDownloadUrl}
                 />
               )}
             </div>
@@ -2431,34 +1975,26 @@ export default function DashboardWorkspace() {
              =================================================================== */}
           {activeMenu === "evidence" && (
             <div className="space-y-6">
-              <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-wrap items-center justify-between gap-4">
+              <header className="page-head">
                 <div>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-bold mb-2">
-                    <Sparkles size={13} /> Repositori Bahan Knowledge Base Agentic AI
-                  </span>
-                  <h2 className="text-2xl font-black text-slate-900">
-                    Menu Evidence Audit Lintas Tim TI
-                  </h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Tempat seluruh tim (Digitalisasi, Layanan TI, Infrastruktur TI,
-                    Tata Kelola TI) mengunggah dokumen bukti audit apa pun.
-                  </p>
+                  <h1>Evidence audit</h1>
+                  <p>Bukti audit lintas tim TI. Visibilitas mengikuti pengaturan tiap dokumen.</p>
                 </div>
-
-                <button
-                  onClick={() => {
-                    setDocCategory("SOP");
-                    setShowUploadEvidenceModal(true);
-                  }}
-                  className="px-5 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2"
-                >
-                  <Upload size={16} /> Upload Dokumen Evidence Baru
-                </button>
-              </div>
+                {!isImpersonating && (
+                  <button
+                    className="btn-primary"
+                    onClick={() => {
+                      setDocCategory("SOP");
+                      setShowUploadEvidenceModal(true);
+                    }}
+                  >
+                    <Upload size={16} /> Unggah evidence
+                  </button>
+                )}
+              </header>
 
               <EvidenceTable
                 docs={evidenceDocs}
-                downloadUrl={getDocumentDownloadUrl}
                 onUpload={() => {
                   setDocCategory("SOP");
                   setShowUploadEvidenceModal(true);
@@ -2491,7 +2027,7 @@ export default function DashboardWorkspace() {
                 attachAgenticFile(e.dataTransfer.files[0]);
               }}
             >
-              {/* Input file tersembunyi untuk tombol 📎 (upload dokumen via Agentic AI) */}
+              {/* Input file tersembunyi untuk tombol (upload dokumen via Agentic AI) */}
               <input
                 ref={aiFileInputRef}
                 type="file"
@@ -2586,38 +2122,13 @@ export default function DashboardWorkspace() {
               {/* Top Header Bar inside Cortex AI Hub */}
               <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-slate-100 bg-white/90 backdrop-blur-md z-10 flex-shrink-0">
                 <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 living-orb-core flex-shrink-0">
-                    <div className="living-orb-plasma" />
-                    <div className="living-orb-gloss" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-black text-sm text-slate-900">
-                        PANDA Cortex AI
-                      </span>
-                      <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 text-[10px] font-bold border border-blue-200">
-                        {aiQuota?.engine ?? "PANDA Agent"}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-400">
-                      Asisten Pencarian, Perangkum, & Unduh Instan Dokumen Audit TI
-                    </p>
-                  </div>
+                  <span className="font-bold text-sm text-slate-900">Asisten dokumen</span>
                 </div>
 
                 <div className="flex items-center gap-2.5">
-                  <span className="px-3.5 py-1.5 rounded-full bg-slate-100 text-slate-700 text-xs font-bold flex items-center gap-1.5">
-                    {isAdmin ? (
-                      <>
-                        <Globe size={13} className="text-blue-600" /> Scope: Semua
-                        Tim & Aplikasi
-                      </>
-                    ) : (
-                      <>
-                        <Lock size={13} className="text-blue-600" /> Scope
-                        Terisolasi: {summary.user_scope_label}
-                      </>
-                    )}
+                  <span className="text-xs text-slate-500 flex items-center gap-1.5">
+                    {isAdmin ? <Globe size={13} /> : <Lock size={13} />}
+                    {isAdmin ? "Semua tim" : summary.user_scope_label}
                   </span>
                   {!isImpersonating && (
                     <button
@@ -2625,9 +2136,9 @@ export default function DashboardWorkspace() {
                         setShowAiSessions(true);
                         loadAiSessions();
                       }}
-                      className="px-3.5 py-1.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 text-xs font-bold flex items-center gap-1.5 transition-colors"
+                      className="px-3 py-1.5 rounded-xl text-slate-600 hover:bg-slate-100 text-xs flex items-center gap-1.5 transition-colors"
                     >
-                      <History size={14} /> Riwayat Chat
+                      <History size={14} /> Riwayat
                     </button>
                   )}
                   {(aiHistory.length > 0 || aiPendingQuestion) && (
@@ -2670,24 +2181,13 @@ export default function DashboardWorkspace() {
               {/* STATE A: EMPTY STATE (SEBELUM ADA CHAT — TAMPILKAN LIVING ORB DI TENGAH) */}
               {aiHistory.length === 0 && !aiPendingQuestion ? (
                 <div className="flex-1 overflow-y-auto flex flex-col items-center px-4 sm:px-6 py-6">
-                  <div className="max-w-4xl w-full text-center my-auto">
-                    {/* ANIMATED LIVING ORB (BOLA BULETAN BERGERAK-GERAK) */}
-                    <div className="living-orb-container mt-2 mb-1">
-                      <div className="w-20 h-20 sm:w-24 sm:h-24 living-orb-core hover:scale-105 transition-transform duration-500">
-                        <div className="living-orb-plasma" />
-                        <div className="living-orb-gloss" />
-                      </div>
-                    </div>
-
-                    <h2 className="text-xl sm:text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 via-sky-500 to-indigo-600 mt-3">
-                      Halo, {user.full_name}
-                    </h2>
-                    <h3 className="text-xl sm:text-3xl font-black text-slate-900 mt-1 mb-5 tracking-tight">
-                      Dokumen audit apa yang ingin Anda cari hari ini?
+                  <div className="max-w-2xl w-full text-center my-auto">
+                    <h3 className="text-2xl sm:text-3xl font-semibold text-slate-900 mb-6 tracking-tight">
+                      Dokumen apa yang Anda cari?
                     </h3>
 
                     {/* Centered Initial Input Box (Like ChatGPT / Gemini Home) */}
-                    <div className="bg-white rounded-3xl border-2 border-blue-100 shadow-xl shadow-blue-900/5 p-3.5 sm:p-4 text-left focus-within:border-blue-500 transition-all">
+                    <div className="bg-white rounded-3xl border border-slate-200 p-3.5 sm:p-4 text-left focus-within:border-blue-500 transition-colors">
                       <textarea
                         ref={(el) => {
                           aiInputRef.current = el;
@@ -2701,114 +2201,66 @@ export default function DashboardWorkspace() {
                         onKeyDown={(e) => handlePromptKeyDown(e, true)}
                         placeholder={
                           aiAttachedFile
-                            ? "Opsional: jelaskan dokumen ini (mis. UAT perubahan SSO aplikasi SIMSKBDN)"
-                            : "Ketik pertanyaan audit (tekan ↑ untuk riwayat sebelumnya), atau lampirkan dokumen dengan 📎 untuk diunggah..."
+                            ? "Opsional: jelaskan dokumen ini"
+                            : "Mis. UAT perubahan modul login"
                         }
                         className="w-full resize-none outline-none text-sm text-slate-800 placeholder:text-slate-400 font-medium p-1"
                       />
                       {aiAttachedFile && renderAttachedFileChip()}
                       {renderReplyChip()}
 
-                      <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-100">
+                      <div className="flex items-center justify-between gap-2 pt-2.5">
                         <div className="flex flex-wrap items-center gap-1.5 flex-1 min-w-0">
                           {renderAttachButton()}
                           {renderThinkingToggle()}
-                          {(
-                            [
-                              { id: "ALL", label: "⚛️ Deeper Audit Search (Semua)" },
-                              { id: "APPLICATION", label: "📁 Hanya Dokumen Aplikasi" },
-                              { id: "EVIDENCE", label: "📂 Hanya Menu Evidence" },
-                            ] as const
-                          ).map((f) => (
-                            <button
-                              key={f.id}
-                              type="button"
-                              onClick={() => setAiFilterModule(f.id)}
-                              className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all whitespace-nowrap ${
-                                aiFilterModule === f.id
-                                  ? "bg-blue-50 text-blue-700 border border-blue-200"
-                                  : "bg-slate-50 text-slate-500 hover:bg-slate-100"
-                              }`}
-                            >
-                              {f.label}
-                            </button>
-                          ))}
+                          <select
+                            aria-label="Cakupan pencarian"
+                            value={aiFilterModule}
+                            onChange={(e) => setAiFilterModule(e.target.value as typeof aiFilterModule)}
+                            className="px-3 py-1.5 text-xs text-slate-600 bg-slate-50 hover:bg-slate-100 outline-none cursor-pointer"
+                          >
+                            <option value="ALL">Semua dokumen</option>
+                            <option value="APPLICATION">Dokumen aplikasi</option>
+                            <option value="EVIDENCE">Evidence audit</option>
+                          </select>
                         </div>
 
                         <button
                           type="button"
                           disabled={aiLoading}
                           onClick={() => handleSendAgentic()}
-                          className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-700 to-sky-400 text-white flex items-center justify-center shadow-lg shadow-blue-600/30 hover:scale-105 transition-transform disabled:opacity-50 flex-shrink-0"
+                          aria-label="Kirim"
+                          className="w-10 h-10 rounded-full bg-[var(--action)] hover:bg-[#1b4f88] text-white flex items-center justify-center transition-colors disabled:opacity-50 flex-shrink-0"
                         >
                           <Send size={16} />
                         </button>
                       </div>
                     </div>
 
-                    {/* Shortcut Pertanyaan Cepat Dinamis Berdasarkan Dokumen User */}
-                    <div className="flex items-center justify-center gap-2 flex-wrap mt-4 max-w-3xl mx-auto">
-                      <button
-                        type="button"
-                        onClick={loadAiShortcuts}
-                        disabled={loadingShortcuts}
-                        title="Acak shortcut pertanyaan baru dari dokumen yang dapat Anda akses"
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-100 hover:bg-blue-100 text-slate-600 hover:text-blue-700 text-xs font-bold transition-all shadow-sm flex-shrink-0"
-                      >
-                        <RotateCw size={12} className={loadingShortcuts ? "animate-spin" : ""} />
-                        <span>Acak Shortcut</span>
-                      </button>
-                      {aiShortcuts.map((chip) => (
+                    {aiShortcuts.length > 0 && (
+                      <div className="flex items-center justify-center gap-2 flex-wrap mt-5">
+                        {aiShortcuts.slice(0, 3).map((chip) => (
+                          <button
+                            key={chip}
+                            type="button"
+                            onClick={() => handleAskAgenticAI(chip)}
+                            className="px-3.5 py-1.5 rounded-full text-slate-600 hover:text-blue-700 hover:bg-blue-50 text-xs transition-colors"
+                          >
+                            {chip}
+                          </button>
+                        ))}
                         <button
-                          key={chip}
                           type="button"
-                          onClick={() => handleAskAgenticAI(chip)}
-                          className="px-3.5 py-1.5 rounded-full bg-white hover:bg-blue-50 hover:text-blue-700 text-slate-700 border border-slate-200/90 text-xs font-bold transition-all shadow-sm hover:border-blue-300"
+                          onClick={loadAiShortcuts}
+                          disabled={loadingShortcuts}
+                          aria-label="Ganti saran"
+                          title="Ganti saran"
+                          className="p-2 rounded-full text-slate-400 hover:text-blue-700 hover:bg-blue-50 transition-colors"
                         >
-                          {chip}
+                          <RotateCw size={13} className={loadingShortcuts ? "animate-spin" : ""} />
                         </button>
-                      ))}
-                    </div>
-
-                    {/* 3 Starter Prompt Cards */}
-                    <div className="grid sm:grid-cols-3 gap-3.5 mt-5 text-left">
-                      {[
-                        {
-                          title: "Cari & Ringkas UAT Aplikasi",
-                          desc: "Tampilkan dokumen UAT aplikasi beserta ringkasan skenario uji & tombol unduhnya.",
-                          prompt:
-                            "Carikan dokumen UAT aplikasi beserta ringkasan hasil pengujiannya",
-                        },
-                        {
-                          title: "Cek Histori Versi Awal (v1.0)",
-                          desc: "Telusuri dokumen PRD dan BAST pada saat pembuatan awal aplikasi (v1.0).",
-                          prompt:
-                            "Tampilkan dokumen PRD dan BAST pembuatan awal versi v1.0",
-                        },
-                        {
-                          title: "Telusuri Evidence Audit TI",
-                          desc: "Cari laporan SLA Layanan TI, hasil uji DRC Infrastruktur, atau SOP Tata Kelola.",
-                          prompt:
-                            "Tampilkan dokumen evidence laporan SLA, DRC, atau SOP audit terbaru",
-                        },
-                      ].map((card) => (
-                        <button
-                          key={card.title}
-                          onClick={() => handleAskAgenticAI(card.prompt)}
-                          className="p-4 rounded-3xl bg-slate-50/80 hover:bg-blue-50/60 border border-slate-200/70 hover:border-blue-300 transition-all text-left group"
-                        >
-                          <div className="w-8 h-8 rounded-xl bg-white border border-slate-200 flex items-center justify-center text-blue-600 mb-2.5 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-                            <Sparkles size={15} />
-                          </div>
-                          <h4 className="font-bold text-slate-900 text-sm mb-1">
-                            {card.title}
-                          </h4>
-                          <p className="text-xs text-slate-500 leading-relaxed">
-                            {card.desc}
-                          </p>
-                        </button>
-                      ))}
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -2863,7 +2315,7 @@ export default function DashboardWorkspace() {
                                 />
                               </div>
                             </div>
-                            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-700 to-sky-500 text-white font-black text-xs flex items-center justify-center flex-shrink-0 shadow-sm">
+                            <div className="w-9 h-9 rounded-full bg-blue-900 text-white font-black text-xs flex items-center justify-center flex-shrink-0 shadow-sm">
                               {user.full_name.slice(0, 2).toUpperCase()}
                             </div>
                           </div>
@@ -2877,7 +2329,7 @@ export default function DashboardWorkspace() {
                               </div>
                               <div className="flex-1 min-w-0 space-y-3">
                                 <div className="flex flex-wrap items-center gap-2">
-                                  <span className="font-black text-sm text-slate-900">PANDA AI</span>
+                                  <span className="font-black text-sm text-slate-900">Asisten PANDA</span>
                                   <span className="text-[10px] font-bold text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-full border border-blue-200">
                                     Asisten Upload Dokumen
                                   </span>
@@ -2889,7 +2341,7 @@ export default function DashboardWorkspace() {
                                   teams={teams}
                                   onPreview={setPreviewDoc}
                                   onSaved={(res) => {
-                                    notify(`Dokumen "${res.document.title}" tersimpan via Agentic AI.`);
+                                    notify(`Dokumen "${res.document.title}" tersimpan lewat asisten.`);
                                     loadAllWorkspaceData();
                                   }}
                                 />
@@ -2912,11 +2364,11 @@ export default function DashboardWorkspace() {
                                     item.stopped
                                       ? "text-amber-700 bg-amber-50 border-amber-200"
                                       : item.response.trace?.thinking
-                                        ? "text-violet-700 bg-violet-50 border-violet-200"
+                                        ? "text-slate-700 bg-slate-100 border-slate-200"
                                         : "text-blue-700 bg-blue-50 border-blue-200"
                                   }`}
                                 >
-                                  {item.response.trace?.thinking && <Brain size={11} />}
+                                  {item.response.trace?.thinking && <Layers size={11} aria-hidden />}
                                   {item.response.engine_mode}
                                 </span>
                                 <AnswerBasisChip basis={item.response.answer_basis} />
@@ -3043,14 +2495,13 @@ export default function DashboardWorkspace() {
                                             >
                                               <Eye size={14} /> Klik Lihat
                                             </button>
-                                            <a
-                                              href={getDocumentDownloadUrl(
-                                                doc.id
-                                              )}
+                                            <DocumentDownloadButton
+                                              docId={doc.id}
+                                              filename={doc.standardized_name}
                                               className="flex-1 py-2 px-3 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold flex items-center justify-center gap-1.5 transition-colors"
                                             >
                                               <Download size={14} /> Download
-                                            </a>
+                                            </DocumentDownloadButton>
                                           </div>
                                         </div>
                                       )
@@ -3074,7 +2525,7 @@ export default function DashboardWorkspace() {
                                 {aiPendingQuestion}
                               </p>
                             </div>
-                            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-blue-700 to-sky-500 text-white font-black text-xs flex items-center justify-center flex-shrink-0">
+                            <div className="w-9 h-9 rounded-full bg-blue-900 text-white font-black text-xs flex items-center justify-center flex-shrink-0">
                               {user.full_name.slice(0, 2).toUpperCase()}
                             </div>
                           </div>
@@ -3086,10 +2537,10 @@ export default function DashboardWorkspace() {
                             </div>
                             <div className="flex-1 min-w-0 space-y-3">
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-black text-sm text-slate-900">PANDA AI</span>
+                                <span className="font-black text-sm text-slate-900">Asisten PANDA</span>
                                 {aiLive?.thinking && (
-                                  <span className="text-[10px] font-bold text-violet-700 bg-violet-50 px-2.5 py-0.5 rounded-full border border-violet-200 inline-flex items-center gap-1">
-                                    <Brain size={11} /> Thinking
+                                  <span className="text-[10px] font-bold text-slate-700 bg-slate-100 px-2.5 py-0.5 rounded-full border border-slate-200 inline-flex items-center gap-1">
+                                    <Layers size={11} aria-hidden /> Penelusuran mendalam
                                   </span>
                                 )}
                               </div>
@@ -3178,9 +2629,9 @@ export default function DashboardWorkspace() {
                           }
                           className="bg-blue-50 text-blue-700 border border-blue-200 rounded-xl px-2.5 py-1.5 text-xs font-bold flex-shrink-0"
                         >
-                          <option value="ALL">⚛️ Semua Modul</option>
-                          <option value="APPLICATION">📁 Aplikasi</option>
-                          <option value="EVIDENCE">📂 Evidence</option>
+                          <option value="ALL">Semua Modul</option>
+                          <option value="APPLICATION">Aplikasi</option>
+                          <option value="EVIDENCE">Evidence</option>
                         </CustomSelect>
 
                         {renderAttachButton()}
@@ -3222,7 +2673,7 @@ export default function DashboardWorkspace() {
                           <button
                             type="submit"
                             disabled={aiLoading || (!aiPrompt.trim() && !aiAttachedFile)}
-                            className="w-10 h-10 rounded-full bg-gradient-to-tr from-blue-700 to-sky-400 text-white flex items-center justify-center shadow-md hover:scale-105 transition-transform disabled:opacity-40 flex-shrink-0"
+                            className="w-10 h-10 rounded-full bg-blue-900 text-white flex items-center justify-center shadow-md hover:bg-blue-700 transition-colors disabled:opacity-40 flex-shrink-0"
                           >
                             <Send size={16} />
                           </button>
@@ -3239,46 +2690,19 @@ export default function DashboardWorkspace() {
               TAB 5: MENU MASTER AKSES & MASTER DATA TIM/BRANCH (KHUSUS ADMIN)
              =================================================================== */}
           {activeMenu === "master_access" && isAdmin && (
-            <div className="space-y-6">
-              {/* Header halaman */}
-              <div className="bg-white rounded-3xl p-6 border border-slate-200/80 shadow-sm flex flex-wrap items-center justify-between gap-4">
+            <div className="page-stack">
+              <header className="page-head">
                 <div>
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-bold mb-2">
-                    <ShieldCheck size={13} /> Administrasi Akses
-                  </span>
-                  <h2 className="text-2xl font-black text-slate-900">Master Akses & Tim</h2>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Kelola badge pegawai, role, serta segmen Tim & Branch yang menentukan isolasi data
-                    dan cakupan Agentic AI.
+                  <h1>Akses & tim</h1>
+                  <p>
+                    {masterUsers.length} pengguna · {masterUsers.filter((u) => isAdminRole(u.role)).length} admin · {teams.length} tim ·{" "}
+                    {teams.reduce((n, t) => n + (t.branches?.length || 0), 0)} branch. Tim dan branch menentukan dokumen yang dapat dilihat tiap pegawai.
                   </p>
                 </div>
-                <button
-                  onClick={openAddUserForm}
-                  className="px-5 py-3.5 rounded-2xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-lg shadow-blue-600/25 flex items-center gap-2"
-                >
-                  <UserPlus size={16} /> Tambah Pengguna
+                <button className="btn-primary" onClick={openAddUserForm}>
+                  <UserPlus size={16} /> Tambah pengguna
                 </button>
-              </div>
-
-              {/* Ringkasan */}
-              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                <StatPill icon={<Users size={17} />} value={masterUsers.length} label="Total pengguna" />
-                <StatPill
-                  icon={<ShieldCheck size={17} />}
-                  value={masterUsers.filter((u) => isAdminRole(u.role)).length}
-                  label="Admin & Super Admin"
-                />
-                <StatPill
-                  icon={<UserCog size={17} />}
-                  value={masterUsers.filter((u) => u.role === "PEGAWAI_TI").length}
-                  label="Pegawai TI"
-                />
-                <StatPill
-                  icon={<GitBranch size={17} />}
-                  value={`${teams.length} / ${teams.reduce((n, t) => n + (t.branches?.length || 0), 0)}`}
-                  label="Tim / Branch"
-                />
-              </div>
+              </header>
 
               <div className="grid xl:grid-cols-12 gap-6 items-start">
                 {/* Daftar pengguna */}
@@ -3484,12 +2908,13 @@ export default function DashboardWorkspace() {
                 </p>
               </div>
               <div className="flex items-center gap-2">
-                <a
-                  href={getDocumentDownloadUrl(previewDoc.id)}
+                <DocumentDownloadButton
+                  docId={previewDoc.id}
+                  filename={previewDoc.stdName}
                   className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1.5"
                 >
                   <Download size={14} /> Download File
-                </a>
+                </DocumentDownloadButton>
                 <button
                   onClick={() => setPreviewDoc(null)}
                   className="p-2 rounded-xl bg-white/10 hover:bg-white/20 text-white"
@@ -3499,11 +2924,7 @@ export default function DashboardWorkspace() {
               </div>
             </div>
             <div className="flex-1 bg-slate-100">
-              <iframe
-                src={getDocumentPreviewUrl(previewDoc.id)}
-                className="w-full h-full border-0"
-                title={previewDoc.title}
-              />
+              <DocumentPreviewFrame docId={previewDoc.id} title={previewDoc.title} />
             </div>
           </div>
         </div>
@@ -3515,7 +2936,7 @@ export default function DashboardWorkspace() {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-black text-slate-900">
-                📁 Buat Folder Aplikasi & Assign Tim
+                Buat Folder Aplikasi & Assign Tim
               </h3>
               <button onClick={() => setShowCreateFolderModal(false)}>
                 <X size={18} />
@@ -3613,7 +3034,7 @@ export default function DashboardWorkspace() {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-black text-slate-900">
-                🚀 Tambah Aplikasi di Folder {selectedFolder?.folder_name}
+                Tambah Aplikasi di Folder {selectedFolder?.folder_name}
               </h3>
               <button onClick={() => setShowCreateAppModal(false)}>
                 <X size={18} />
@@ -3830,7 +3251,7 @@ export default function DashboardWorkspace() {
                     )}
                   </div>
                   <p className="sm:col-span-2 text-[11px] text-blue-900/70">
-                    Pegawai hanya melihat folder, evidence, dan hasil Agentic AI dari segmen ini serta
+                    Pegawai hanya melihat folder, evidence, dan hasil asisten dokumen dari segmen ini serta
                     dokumen berstatus All Tim.
                   </p>
                 </div>
@@ -3870,7 +3291,7 @@ export default function DashboardWorkspace() {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-black text-slate-900">
-                🔄 Tambah Section Perubahan ({selectedApp?.app_name})
+                Tambah Section Perubahan ({selectedApp?.app_name})
               </h3>
               <button onClick={() => setShowCreateSectionModal(false)}>
                 <X size={18} />
@@ -3945,7 +3366,7 @@ export default function DashboardWorkspace() {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-black text-slate-900">
-                📤 Upload Dokumen Aplikasi ({activeSectionObj?.version_label})
+                Upload Dokumen Aplikasi ({activeSectionObj?.version_label})
               </h3>
               <button onClick={() => setShowUploadAppDocModal(false)}>
                 <X size={18} />
@@ -4021,7 +3442,7 @@ export default function DashboardWorkspace() {
                 />
               </div>
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
-                📌 <strong>Log Otomatis:</strong> Akan tercatat diunggah oleh{" "}
+                <strong>Log Otomatis:</strong> Akan tercatat diunggah oleh{" "}
                 <strong>
                   {user.full_name} (Badge {user.badge_number})
                 </strong>{" "}
@@ -4054,7 +3475,7 @@ export default function DashboardWorkspace() {
           <div className="bg-white rounded-3xl max-w-lg w-full p-6 sm:p-8 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-black text-slate-900">
-                📂 Upload Dokumen Menu Evidence (Bahan AI)
+                Upload Dokumen Menu Evidence (Bahan AI)
               </h3>
               <button onClick={() => setShowUploadEvidenceModal(false)}>
                 <X size={18} />
@@ -4115,7 +3536,7 @@ export default function DashboardWorkspace() {
                 <div className="p-4 rounded-2xl bg-blue-50/80 border border-blue-200 space-y-3">
                   <div>
                     <label className="block text-xs font-bold text-blue-950 mb-1">
-                      🔐 Pengaturan Visibilitas Dokumen (Khusus Admin)
+                      Pengaturan Visibilitas Dokumen (Khusus Admin)
                     </label>
                     <CustomSelect
                       value={evidenceVisScope}
@@ -4127,10 +3548,10 @@ export default function DashboardWorkspace() {
                       className="w-full px-3.5 py-2.5 rounded-xl border border-blue-300 text-xs font-bold bg-white text-slate-900"
                     >
                       <option value="ALL_TIM">
-                        🌐 Dapat Dilihat Semua Tim (All Tim)
+                        Dapat Dilihat Semua Tim (All Tim)
                       </option>
                       <option value="TEAM_ONLY">
-                        🔒 Hanya Dapat Dilihat oleh Tim Tertentu
+                        Hanya Dapat Dilihat oleh Tim Tertentu
                       </option>
                     </CustomSelect>
                   </div>
@@ -4196,7 +3617,7 @@ export default function DashboardWorkspace() {
                   rows={3}
                   value={docSummary}
                   onChange={(e) => setDocSummary(e.target.value)}
-                  placeholder="Tuliskan poin utama dokumen ini. Agentic AI membaca ringkasan ini sekaligus seluruh isi file yang diunggah..."
+                  placeholder="Tuliskan poin utama dokumen ini. Asisten membaca ringkasan ini sekaligus seluruh isi file yang diunggah..."
                   className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs"
                 />
               </div>
@@ -4214,7 +3635,7 @@ export default function DashboardWorkspace() {
               </div>
 
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
-                📌 <strong>Log Upload Detail:</strong> Dicatat atas nama{" "}
+                <strong>Log Upload Detail:</strong> Dicatat atas nama{" "}
                 <strong>
                   {user.full_name} (Badge {user.badge_number})
                 </strong>{" "}

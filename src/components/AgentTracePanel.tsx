@@ -42,7 +42,7 @@ const KIND_STYLE: Record<AgentStepKind, { icon: React.ElementType; tone: string 
   tool: { icon: Wrench, tone: "text-indigo-600 bg-indigo-50 border-indigo-200" },
   search: { icon: Search, tone: "text-blue-600 bg-blue-50 border-blue-200" },
   read: { icon: BookOpen, tone: "text-emerald-600 bg-emerald-50 border-emerald-200" },
-  rerank: { icon: ListOrdered, tone: "text-violet-600 bg-violet-50 border-violet-200" },
+  rerank: { icon: ListOrdered, tone: "text-blue-600 bg-blue-50 border-blue-200" },
   answer: { icon: PenLine, tone: "text-sky-600 bg-sky-50 border-sky-200" },
 };
 
@@ -144,7 +144,7 @@ export default function AgentTracePanel({
   return (
     <div
       className={`rounded-2xl border overflow-hidden transition-colors ${
-        thinking ? "border-violet-200 bg-gradient-to-br from-violet-50/70 to-white" : "border-slate-200 bg-white"
+        thinking ? "border-blue-200 bg-blue-50/60" : "border-slate-200 bg-white"
       }`}
     >
       {live && <div className="ai-progress-sweep" />}
@@ -159,7 +159,7 @@ export default function AgentTracePanel({
       >
         <span
           className={`w-7 h-7 rounded-xl flex items-center justify-center flex-shrink-0 ${
-            thinking ? "bg-violet-600 text-white" : "bg-blue-100 text-blue-700"
+            thinking ? "bg-blue-600 text-white" : "bg-blue-100 text-blue-700"
           } ${live && thinking ? "ai-breathe" : ""}`}
         >
           {live && !thinking ? (
@@ -174,8 +174,8 @@ export default function AgentTracePanel({
         </span>
         <span className="flex-1 min-w-0">
           <span
-            className={`block text-[13px] font-bold truncate ${thinking ? "text-violet-900" : "text-slate-800"} ${
-              live ? "ai-shimmer-text" : ""
+            className={`block text-[13px] font-bold truncate ${thinking ? "text-blue-900" : "text-slate-800"} ${
+              ""
             }`}
           >
             {headline}
@@ -226,7 +226,7 @@ function StepItem({ step, last }: { step: AgentStep; last: boolean }) {
       </span>
 
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 pt-1">
-        <span className={`text-[13px] font-semibold text-slate-800 ${step.status === "running" ? "ai-shimmer-text" : ""}`}>
+        <span className={`text-[13px] font-semibold text-slate-800 `}>
           {step.title}
         </span>
         {!!step.round && <span className="text-[10px] font-semibold text-slate-400">putaran {step.round}</span>}
@@ -310,7 +310,7 @@ function ToolDetails({ tool, running }: { tool: ToolCallInfo; running: boolean }
         )}
       </div>
       {running && tool.phase && (
-        <p className="flex items-center gap-1.5 text-[11px] text-indigo-600 ai-shimmer-text">
+        <p className="flex items-center gap-1.5 text-[11px] text-indigo-600">
           <Loader2 size={11} className="animate-spin" /> {tool.phase}
         </p>
       )}
@@ -334,10 +334,10 @@ function RerankLine({ info }: { info: RerankInfo }) {
   return (
     <div className="mt-1.5 space-y-1">
       <p className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500">
-        <ListOrdered size={12} className={model ? "text-violet-500" : "text-slate-400"} />
+        <ListOrdered size={12} className={model ? "text-blue-500" : "text-slate-400"} />
         {model ? (
           <>
-            Reranker <strong className="text-violet-700">{info.provider}:{info.model}</strong>
+            Reranker <strong className="text-blue-700">{info.provider}:{info.model}</strong>
           </>
         ) : (
           <>Penilaian ulang heuristik</>
@@ -432,7 +432,7 @@ function ResultList({ kind, results }: { kind: AgentStepKind; results: StepResul
             {scored && (
               <span className="w-14 h-1.5 rounded-full bg-slate-100 overflow-hidden flex-shrink-0" title={`Skor ${r.score.toFixed(2)}`}>
                 <span
-                  className={`block h-full rounded-full ${reranked ? "bg-violet-500" : "bg-blue-500"}`}
+                  className={`block h-full rounded-full ${reranked ? "bg-blue-500" : "bg-blue-500"}`}
                   style={{ width: `${Math.max(4, Math.min(100, r.score * 100))}%` }}
                 />
               </span>

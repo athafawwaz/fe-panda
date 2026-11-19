@@ -51,39 +51,6 @@ export function shortName(name: string): string {
   return name.replace(/\s*\(.*?\)\s*/g, " ").trim() || name;
 }
 
-const AVATAR_TONES = [
-  "from-blue-600 to-sky-500",
-  "from-violet-600 to-fuchsia-500",
-  "from-emerald-600 to-teal-500",
-  "from-amber-500 to-orange-500",
-  "from-rose-600 to-pink-500",
-  "from-indigo-600 to-blue-500",
-];
-
-/** Warna avatar yang konsisten per orang (berdasarkan badge / nama). */
-export function avatarTone(key: string): string {
-  let h = 0;
-  for (const c of key) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return AVATAR_TONES[h % AVATAR_TONES.length];
-}
-
-/** Warna badge per kategori dokumen. */
-export const CATEGORY_STYLE: Record<string, string> = {
-  PRD: "bg-violet-100 text-violet-800 ring-violet-200",
-  FSD: "bg-sky-100 text-sky-800 ring-sky-200",
-  UAT: "bg-emerald-100 text-emerald-800 ring-emerald-200",
-  BAST: "bg-amber-100 text-amber-800 ring-amber-200",
-  SOP: "bg-indigo-100 text-indigo-800 ring-indigo-200",
-  SLA: "bg-rose-100 text-rose-800 ring-rose-200",
-  DRC: "bg-orange-100 text-orange-800 ring-orange-200",
-  PENTEST: "bg-red-100 text-red-800 ring-red-200",
-  LAINNYA: "bg-slate-100 text-slate-700 ring-slate-200",
-};
-
-export function categoryStyle(cat: string): string {
-  return CATEGORY_STYLE[cat] ?? CATEGORY_STYLE.LAINNYA;
-}
-
 export function formatFileSize(bytes: number): string {
   if (!bytes) return "-";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -96,4 +63,10 @@ export function matchesQuery(query: string, ...fields: (string | undefined | nul
   if (words.length === 0) return true;
   const haystack = fields.filter(Boolean).join(" ").toLowerCase();
   return words.every((w) => haystack.includes(w));
+}
+
+const APP_STATUS: Record<string, string> = { PRODUCTION: "Produksi", DEVELOPMENT: "Pengembangan", RETIRED: "Tidak aktif" };
+/** Label status aplikasi untuk pengguna; nilai yang tidak dikenal ditampilkan apa adanya. */
+export function appStatusLabel(status: string): string {
+  return APP_STATUS[status] ?? status;
 }
